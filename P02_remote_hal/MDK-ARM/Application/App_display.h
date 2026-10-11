@@ -9,9 +9,21 @@
  * OLED 128x64，使用 8x12 的 ASCII 字体，每行正好 16 个字符
  *
  *   行1 (y=0)   LNK 98%         E     链路成功率 + 状态字母
- *   行2 (y=14)  MECANUM / ARM          当前模式
- *   行3 (y=26)  VX +512  VY ----       轴1 + 轴2
- *   行4 (y=38)  W  ----                轴3 (+ 轴4)
+ *   行2 (y=14)  MECANUM READY          当前模式 + 是否已解锁
+ *   行3 (y=26)  左摇杆Y         右摇杆Y
+ *   行4 (y=38)  左摇杆X         右摇杆X
+ *
+ * 左边一列 = 左摇杆的两个轴，右边一列 = 右摇杆的两个轴。
+ * 具体标签随「模式」和「是否解锁」变化：
+ *
+ *   未解锁    TH 左杆Y | PT 右杆Y
+ *             YW 左杆X | RL 右杆X
+ *
+ *   底盘      -- 不使用 | VX 前后
+ *             W  自转   | VY 左右
+ *
+ *   机械臂    BM 大臂   | WP 腕部俯仰
+ *             EX 小臂   | WR 腕部转动
  *
  * 轴值域 -500 ~ +500，0 表示中位/停止，死区内显示 "----"
  * 状态字母永远只显示一个，放在行1 最右一格
@@ -20,9 +32,6 @@
 #define LINE2_Y 14
 #define LINE3_Y 26
 #define LINE4_Y 38
-
-/* 模式 */
-/* MODE_CHASSIS / MODE_ARM are defined in App_process_data.h */
 
 /* 状态字母 */
 #define ACT_NONE  ' '
@@ -41,6 +50,7 @@ typedef struct
     uint8_t link_valid;   /* 1 = 收到过 ACK，link_percent 有效 */
     uint8_t link_percent; /* 0-100，发送成功率 */
     uint8_t mode;         /* MODE_CHASSIS / MODE_ARM */
+    uint8_t armed;        /* 1 = 已解锁（摇杆已回中） */
     int16_t axis[4];      /* -500 ~ +500，顺序 thr / yaw / pit / rol */
     char    action;       /* 状态字母 ACT_xxx */
 } Ui_Data;

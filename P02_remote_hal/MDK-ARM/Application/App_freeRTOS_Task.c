@@ -1,8 +1,5 @@
 #include "App_freeRTOS_Task.h"
 
-/* 临时：P3 阶段会换成 App_command 里的新轴处理结果 */
-extern Remote_Data remote_data;
-
 // STM32F103C8T6 => SRAM 20k  => 分配12K给操作系统
 // 电源管理任务
 void power_task(void *args);
@@ -140,17 +137,17 @@ void oled_task(void *args)
     xLastWakeTime = xTaskGetTickCount();
     while (1)
     {
-        /* 模式 和 状态字母 来自按键命令 */
+        /* 模式和状态字母来自按键命令 */
         ui_data.mode   = cmd.mode;
+        ui_data.armed  = cmd.armed;
         ui_data.action = cmd.action;
 
-        /* TODO(P3): 这里改成读取新的轴处理结果（-500 ~ +500）
-         * 现在临时用现有的 remote_data（0-1000）减 500 顶替，
-         * 目的只是先把"摇杆 -> 屏幕"这条显示链路验证通 */
-        ui_data.axis[0] = remote_data.thr - 500;
-        ui_data.axis[1] = remote_data.yaw - 500;
-        ui_data.axis[2] = remote_data.pit - 500;
-        ui_data.axis[3] = remote_data.rol - 500;
+        /* 四个轴：显示处理后的真实杆位
+         * （未解锁时也照实显示，这样才能对着屏幕把杆放回中位） */
+        ui_data.axis[0] = axis_value[0];
+        ui_data.axis[1] = axis_value[1];
+        ui_data.axis[2] = axis_value[2];
+        ui_data.axis[3] = axis_value[3];
 
         App_display_show();
 

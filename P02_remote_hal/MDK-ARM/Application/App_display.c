@@ -103,8 +103,7 @@ void App_display_boot(void)
     vTaskDelay(pdMS_TO_TICKS(600));
 
     /* --- 第 3 屏：提示摇杆回中 ---
-     * 真正的"等回中"判定在 P3 阶段接入（回中解锁），
-     * 这里先把提示打出来，用于确认显示链路正常 */
+     * 真正的回中判定在 App_command 里（未解锁就一直是 HOLD 状态） */
     OLED_Clear();
     oled_line(LINE1_Y, "CENTER STICKS");
     OLED_Refresh_Gram();
@@ -118,7 +117,6 @@ void App_display_show(void)
 {
     char buf[17];
     char lnk[9];
-    char sw[5];
     uint8_t i;
 
     /* ---------- 行1：链路成功率 + 状态字母 ---------- */
@@ -149,27 +147,39 @@ void App_display_show(void)
         OLED_ShowChar(15 * 8, LINE1_Y, ACT_ESTOP, 12, 0);
     }
 
-    /* ---------- 行2：当前模式 ---------- */
-    oled_line(LINE2_Y, (ui_data.mode == MODE_ARM) ? "ARM" : "MECANUM");
+    /* ---------- 行2：当前模式 + 是否已解锁 ---------- */
+    sprintf(buf, "%s %s",
+            (ui_data.mode == MODE_ARM) ? "ARM" : "MECANUM",
+            ui_data.armed ? "READY" : "CENTER");
+    oled_line(LINE2_Y, buf);
 
-    /* ---------- 行3 / 行4：4 个轴的命令值 ---------- */
-    if (ui_data.mode == MODE_ARM)
+    /* ---------- 行3 / 行4 ---------- */
+    if (!ui_data.armed)
     {
-        /* thr=大臂  yaw=小臂  pit=腕俯仰  rol=腕转动 */
-        pair_str(buf, "BM", ui_data.axis[0], "EX", ui_data.axis[1]);
+        /* 还没解锁：用物理轴标签，方便对着屏幕把四个杆都放回中位
+         * 左列 = 左摇杆（TH 上下 / YW 左右），右列 = 右摇杆（PT 上下 / RL 左右） */
+        pair_str(buf, "TH", ui_data.axis[0], "PT", ui_data.axis[2]);
         oled_line(LINE3_Y, buf);
 
-        pair_str(buf, "WP", ui_data.axis[2], "WR", ui_data.axis[3]);
+        pair_str(buf, "YW", ui_data.axis[1], "RL", ui_data.axis[3]);
+        oled_line(LINE4_Y, buf);
+    }
+    else if (ui_data.mode == MODE_ARM)
+    {
+        /* 机械臂：左列 左杆Y=大臂 / 左杆X=小臂，右列 右杆Y=腕俯仰 / 右杆X=腕转动 */
+        pair_str(buf, "BM", ui_data.axis[0], "WP", ui_data.axis[2]);
+        oled_line(LINE3_Y, buf);
+
+        pair_str(buf, "EX", ui_data.axis[1], "WR", ui_data.axis[3]);
         oled_line(LINE4_Y, buf);
     }
     else
     {
-        /* pit=前后VX  rol=左右VY  yaw=自转W  thr 不使用 */
-        pair_str(buf, "VX", ui_data.axis[2], "VY", ui_data.axis[3]);
+        /* 底盘：左杆Y 不使用，左杆X = 自转；右杆Y = 前后，右杆X = 左右 */
+        pair_str(buf, "--", 0, "VX", ui_data.axis[2]);
         oled_line(LINE3_Y, buf);
 
-        axis_str(sw, ui_data.axis[1]);
-        sprintf(buf, "W  %s", sw);
+        pair_str(buf, "W ", ui_data.axis[1], "VY", ui_data.axis[3]);
         oled_line(LINE4_Y, buf);
     }
 

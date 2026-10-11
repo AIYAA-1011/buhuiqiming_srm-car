@@ -1,91 +1,140 @@
 #include "App_process_data.h"
 
-// 摇杆数据结构体
+/* 摇杆原始 ADC 值（由 DMA 直接写进 adc_buff，这里取出来） */
 Joystick_Struct joystick = {0};
-Remote_Data remote_data = {0};
-// 区分一下摇杆的控制值和按键的微调值
-int16_t key_pit_offset = 0;  // 往前飞是正
-int16_t key_roll_offset = 0; // 往右飞是正
 
-// 记录摇杆偏移量
-int16_t thr_offset = 0;
-int16_t yaw_offset = 0;
-int16_t pit_offset = 0;
-int16_t rol_offset = 0;
+/* 处理后的四个轴命令值：-500 ~ +500，0 = 中位 / 停止 */
+int16_t axis_value[4] = {0};
 
-// 校准摇杆函数
-void App_calibrate_joystick(void)
+/* 每个轴的运行时参数 */
+typedef struct
 {
-    // 零偏校准的逻辑就是减去零偏的值
-    // 首先清空掉按键的微调值
-    key_pit_offset = 0;
-    key_roll_offset = 0;
-    // 多次读取求平均值
-    int16_t thr_sum = 0;
-    int16_t yaw_sum = 0;
-    int16_t pit_sum = 0;
-    int16_t rol_sum = 0;
-    for (uint8_t i = 0; i < 10; i++)
-    {
-        App_process_joystick_data();
-        thr_sum += joystick.thr - 0;
-        yaw_sum += joystick.yaw - 500;
-        pit_sum += joystick.pit - 500;
-        rol_sum += joystick.rol - 500;
-        vTaskDelay(10);
-    }
+    uint8_t inv;    /* 极性：1 = 反相 */
+    int16_t dz;     /* 死区半宽（对称） */
+    int16_t offset; /* 零偏，由校准得到 */
+} Axis_Cfg;
 
-    // 零偏校准的偏移值没有累加的效果  会造成两次校准退回的情况
-    thr_offset += thr_sum / 10;
-    yaw_offset += yaw_sum / 10;
-    pit_offset += pit_sum / 10;
-    rol_offset += rol_sum / 10;
+static Axis_Cfg s_axis[4] =
+{
+    { AXIS_INV_THR, AXIS_DEADZONE, 0 }, /* 左杆Y -> 大臂     */
+    { AXIS_INV_YAW, AXIS_DEADZONE, 0 }, /* 左杆X -> 小臂     */
+    { AXIS_INV_PIT, AXIS_DEADZONE, 0 }, /* 右杆Y -> 腕部俯仰 */
+    { AXIS_INV_ROL, AXIS_DEADZONE, 0 }, /* 右杆X -> 腕部转动 */
+};
+
+/**
+ * @brief ADC 原始值 -> -500 ~ +500
+ *        这一步还没减零偏，也没做极性和死区
+ */
+static int16_t axis_adc_to_span(int16_t raw)
+{
+    return (int16_t)(AXIS_SPAN - ((int32_t)raw * (AXIS_SPAN * 2) / 4095));
 }
 
 /**
- * @brief 处理摇杆数据  => 修正极性相位和标准值
+ * @brief 摇杆结构体 -> 数组，顺序 thr / yaw / pit / rol
+ */
+static void axis_to_array(const Joystick_Struct *js, int16_t *raw)
+{
+    raw[0] = js->thr;
+    raw[1] = js->yaw;
+    raw[2] = js->pit;
+    raw[3] = js->rol;
+}
+
+/**
+ * @brief 单个轴的处理
+ */
+static int16_t axis_process(int16_t raw, const Axis_Cfg *cfg)
+{
+    int16_t v = axis_adc_to_span(raw);
+
+    if (cfg->inv)
+    {
+        v = -v; /* 极性修正 */
+    }
+
+    v -= cfg->offset; /* 减掉零偏 */
+
+    v = Com_limit(v, -AXIS_SPAN, AXIS_SPAN); /* 限幅 */
+
+    if (v > -cfg->dz && v < cfg->dz)
+    {
+        return 0; /* 死区内 -> 停止 */
+    }
+
+    /* 死区外重新拉伸：让输出从 0 平滑增长，
+     * 否则死区边缘会从 0 直接跳到 dz（10% 速度），精细操作很难受 */
+    if (v > 0)
+    {
+        return (int16_t)((v - cfg->dz) * AXIS_SPAN / (AXIS_SPAN - cfg->dz));
+    }
+    return (int16_t)((v + cfg->dz) * AXIS_SPAN / (AXIS_SPAN - cfg->dz));
+}
+
+/**
+ * @brief 摇杆零偏校准
  *
+ * 把四个摇杆"当前所在的位置"定义为中位。
+ * 所以调用之前必须先把四个杆都放到中位（左杆Y 也要放中间）。
+ */
+void App_calibrate_joystick(void)
+{
+    int32_t acc[4] = {0};
+    int16_t raw[4];
+    uint8_t i;
+    uint8_t k;
+
+    for (i = 0; i < 10; i++)
+    {
+        Int_joystick_get(&joystick);
+        axis_to_array(&joystick, raw);
+
+        for (k = 0; k < 4; k++)
+        {
+            int16_t v = axis_adc_to_span(raw[k]);
+            if (s_axis[k].inv)
+            {
+                v = -v;
+            }
+            acc[k] += v;
+        }
+
+        vTaskDelay(10); /* 10 次共约 100ms */
+    }
+
+    taskENTER_CRITICAL();
+    for (k = 0; k < 4; k++)
+    {
+        /* 这里必须是 = 而不是 +=
+         * 原来的代码是 +=，每校准一次零偏就叠加一次，越校越偏
+         * （旧代码的注释里自己也提到了这个问题） */
+        s_axis[k].offset = (int16_t)(acc[k] / 10);
+    }
+    taskEXIT_CRITICAL();
+
+    debug_printf("CALIB: thr=%d yaw=%d pit=%d rol=%d\r\n",
+                 s_axis[0].offset, s_axis[1].offset,
+                 s_axis[2].offset, s_axis[3].offset);
+}
+
+/**
+ * @brief 读取并处理摇杆数据
  */
 void App_process_joystick_data(void)
 {
-    // 如何解决freeRTOS的任务切换问题
-    // 使用临界区解决
+    int16_t raw[4];
+    uint8_t k;
+
     taskENTER_CRITICAL();
 
-    // 1. 获取摇杆监控的ADC值
     Int_joystick_get(&joystick);
+    axis_to_array(&joystick, raw);
 
-    // 理论上  摇杆的任务运行到这一行  有可能跳转到按键任务的 => 会出现按键任务使用的摇杆数据没有经过处理
-    // 2. 处理范围和极性  想要使用的范围值0-1000 => ADC的范围是0-4095
-    joystick.thr = 1000 - (joystick.thr * 1000 / 4095);
-    joystick.yaw = 1000 - (joystick.yaw * 1000 / 4095);
-    joystick.pit = 1000 - (joystick.pit * 1000 / 4095);
-    joystick.rol = 1000 - (joystick.rol * 1000 / 4095);
+    for (k = 0; k < 4; k++)
+    {
+        axis_value[k] = axis_process(raw[k], &s_axis[k]);
+    }
 
-    // 3. 处理零偏校准
-    joystick.thr -= thr_offset;
-    joystick.yaw -= yaw_offset;
-    joystick.pit -= pit_offset;
-    joystick.rol -= rol_offset;
-
-    // 4. 考虑按键的微调值
-    joystick.pit += key_pit_offset;
-    joystick.rol += key_roll_offset;
-
-    // 5. 计算上偏移值可能超出范围  => 限制在0-1000
-    joystick.thr = Com_limit(joystick.thr, 0, 1000);
-    joystick.yaw = Com_limit(joystick.yaw, 0, 1000);
-    joystick.pit = Com_limit(joystick.pit, 0, 1000);
-    joystick.rol = Com_limit(joystick.rol, 0, 1000);
-
-    // 退出临界区
     taskEXIT_CRITICAL();
-
-    // 将处理完成的数据赋值给遥控数据
-    remote_data.thr = joystick.thr;
-    remote_data.yaw = joystick.yaw;
-    remote_data.pit = joystick.pit;
-    remote_data.rol = joystick.rol;
-
-    // debug_printf(":%d,%d,%d,%d\n", joystick.thr, joystick.yaw, joystick.pit, joystick.rol);
 }
