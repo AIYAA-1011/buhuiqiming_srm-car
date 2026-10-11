@@ -51,6 +51,7 @@ osThreadId MotorTaskHandle;
 osThreadId RemoteTaskHandle;
 osThreadId ArmTaskHandle;
 osThreadId OledTaskHandle;
+osThreadId SafetyTaskHandle;
 osMessageQId qMoterCmdHandle;
 osMessageQId qArmCmdHandle;
 
@@ -63,6 +64,7 @@ void StartMotorTask(void const * argument);
 void StartRemoteTask(void const * argument);
 void StartArmTask(void const * argument);
 void StartOledTask(void const * argument);
+void StartSafetyTask(void const * argument);
 
 void MX_FREERTOS_Init(void); /* (MISRA C 2004 rule 8.1) */
 
@@ -133,6 +135,10 @@ void MX_FREERTOS_Init(void) {
   /* definition and creation of OledTask */
   osThreadDef(OledTask, StartOledTask, osPriorityBelowNormal, 0, 192);
   OledTaskHandle = osThreadCreate(osThread(OledTask), NULL);
+
+  /* definition and creation of SafetyTask */
+  osThreadDef(SafetyTask, StartSafetyTask, osPriorityRealtime, 0, 128);
+  SafetyTaskHandle = osThreadCreate(osThread(SafetyTask), NULL);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -210,6 +216,24 @@ __weak void StartOledTask(void const * argument)
     osDelay(1);
   }
   /* USER CODE END StartOledTask */
+}
+
+/* USER CODE BEGIN Header_StartSafetyTask */
+/**
+* @brief Function implementing the SafetyTask thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_StartSafetyTask */
+__weak void StartSafetyTask(void const * argument)
+{
+  /* USER CODE BEGIN StartSafetyTask */
+  /* Infinite loop */
+  for(;;)
+  {
+    osDelay(1);
+  }
+  /* USER CODE END StartSafetyTask */
 }
 
 /* Private application code --------------------------------------------------*/
