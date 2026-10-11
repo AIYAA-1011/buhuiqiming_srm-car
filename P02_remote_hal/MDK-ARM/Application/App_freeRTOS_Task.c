@@ -142,6 +142,10 @@ void oled_task(void *args)
         ui_data.armed  = cmd.armed;
         ui_data.action = cmd.action;
 
+        /* 链路成功率（靠无线芯片的硬件 ACK 统计出来的） */
+        ui_data.link_valid   = link_stat.valid;
+        ui_data.link_percent = link_stat.percent;
+
         /* 四个轴：显示处理后的真实杆位
          * （未解锁时也照实显示，这样才能对着屏幕把杆放回中位） */
         ui_data.axis[0] = axis_value[0];

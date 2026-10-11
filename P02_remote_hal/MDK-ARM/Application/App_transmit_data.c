@@ -1,46 +1,70 @@
 #include "App_transmit_data.h"
 #include "App_command.h"
 
+/* 一帧 17 字节的发送缓冲 */
 uint8_t transmit_buff[TX_PLOAD_WIDTH] = {0};
 
-uint8_t post_buff[TX_PLOAD_WIDTH] = {0};
+/* 每 LINK_WINDOW_SENDS 次发送结算一次成功率（发送周期约 10ms => 约 500ms） */
+#define LINK_WINDOW_SENDS 50
+
+/* 链路统计结果 */
+Link_Stat link_stat = {0};
+
+static uint16_t s_tx_total = 0;
+static uint16_t s_tx_ok    = 0;
 
 /**
- * @brief 自动切换SI24R1的模式 => 将采集完成的遥控数据打包发送到飞机
+ * @brief 打包并发送一帧遥控数据
  *
+ * 帧格式（17 字节）：
+ *   [0..2]   帧头 's' 'g' 'g'
+ *   [3..10]  四个轴，有符号 16 位大端，值域 -500 ~ +500，0 = 停止
+ *            顺序：thr(左杆Y) yaw(左杆X) pit(右杆Y) rol(右杆X)
+ *   [11]     命令标志位  bit0 急停  bit1 夹爪  bit2 模式
+ *                       bit3 过洞  bit4 取矿  bit5 兑矿
+ *   [12]     预留
+ *   [13..16] [0..12] 共 13 字节的累加和，大端 32 位
  */
 void App_transmit_data(void)
 {
-    // 2. 发送数据 => 唯一性和可靠性
-    // (1) => 帧头校验指定发送给对应的设备 唯一性
-    // (2) => 发送数据的结尾 => 添加检验和(将发送的数据累加得到的值添加到数据的末尾) 可靠性
-
     uint32_t sum = 0;
     int16_t out_axis[4];
     uint8_t k;
+    uint8_t res;
 
-    //  帧头校验设置为3字节 => 数据本身是10字节 => 校验和设置为4字节
+    /* ---------- 帧头 ---------- */
     transmit_buff[0] = FRAME_HEAD_CHECK_1;
     transmit_buff[1] = FRAME_HEAD_CHECK_2;
     transmit_buff[2] = FRAME_HEAD_CHECK_3;
 
-    // 取当前应该发出去的四个轴值
-    // 未解锁（等摇杆回中）或者急停时，这个函数会把四个轴全部置 0
+    /* ---------- 四个轴 ----------
+     * 未解锁（还在等摇杆回中）或者急停锁定时，
+     * App_command_get_output() 会把四个轴全部置 0 */
     App_command_get_output(out_axis);
 
-    // 有符号 16 位，高 8 位在前（负数用二进制补码直接发）
     for (k = 0; k < 4; k++)
     {
-        uint16_t u = (uint16_t)out_axis[k];
+        uint16_t u = (uint16_t)out_axis[k]; /* 负数用二进制补码 */
         transmit_buff[3 + k * 2]     = (uint8_t)(u >> 8);
         transmit_buff[3 + k * 2 + 1] = (uint8_t)(u & 0xFF);
     }
 
-    // TODO(P4): byte11 / byte12 改成标志位
-    //           （急停 / 夹爪 / 模式 / 三个预设），并去掉回传那一段
-    transmit_buff[11] = 0;
+    /* ---------- 命令标志位 ----------
+     * 电平语义：每帧都把当前状态原样发一遍，不做"发送后清零"。
+     * 这样即使某几帧丢了，下一帧会自动补上，
+     * 急停 / 夹爪 / 模式 / 预设都不会因为丢一帧而永久丢失。 */
+    transmit_buff[11] = (uint8_t)(
+          (cmd.estop   ? 0x01 : 0)
+        | (cmd.gripper ? 0x02 : 0)
+        | ((cmd.mode == MODE_ARM)          ? 0x04 : 0)
+        | ((cmd.preset == CMD_PRESET_HOLE) ? 0x08 : 0)
+        | ((cmd.preset == CMD_PRESET_PICK) ? 0x10 : 0)
+        | ((cmd.preset == CMD_PRESET_PUT)  ? 0x20 : 0));
+
+    /* [12] 预留：将来可以放"底座回转""速度档位"之类 */
     transmit_buff[12] = 0;
 
+    /* ---------- 累加和 ---------- */
     for (uint8_t i = 0; i < 13; i++)
     {
         sum += transmit_buff[i];
@@ -51,19 +75,25 @@ void App_transmit_data(void)
     transmit_buff[15] = (sum >> 8) & 0xFF;
     transmit_buff[16] = sum & 0xFF;
 
-    // 1. 切换到发送模式
-    Int_SI24R1_TX_Mode();
-    uint8_t res = Int_SI24R1_TxPacket(transmit_buff);
-    // 3. 切换回接收模式
-    Int_SI24R1_RX_Mode();
+    /* ---------- 发送 ----------
+     * 上电时已经配成常驻发送模式（见 Int_SI24R1_Init），
+     * 这里不用再切模式，也不用切回接收模式等回传 */
+    res = Int_SI24R1_TxPacket(transmit_buff);
 
-    // 判断是否发送成功 => 发送成功接收回传数据
+    /* ---------- 链路统计 ----------
+     * res == 0 表示无线芯片收到了小车回的 ACK => 小车确实收到了这一帧。
+     * 这一步是 SI24R1 硬件自动完成的，不需要小车端配合。 */
+    s_tx_total++;
     if (res == 0)
     {
-        uint16_t count = 500;
-        // 2.4G同步发送逻辑 => 必须严格按照双端发送的时序才能数据
-        while (Int_SI24R1_RxPacket(post_buff) == 1 && count--)
-        {
-        }
+        s_tx_ok++;
+    }
+
+    if (s_tx_total >= LINK_WINDOW_SENDS)
+    {
+        link_stat.percent = (uint8_t)((uint32_t)s_tx_ok * 100 / s_tx_total);
+        link_stat.valid   = (s_tx_ok > 0) ? 1 : 0;
+        s_tx_total = 0;
+        s_tx_ok    = 0;
     }
 }

@@ -245,8 +245,11 @@ uint8_t Int_SI24R1_Init(void)
 		HAL_Delay(10);
 	}
 
-	// 设置默认的状态为接收模式  => 每次发送数据的时候  切换到发送状态 
-	Int_SI24R1_RX_Mode();
+	// 常驻发送模式
+	// 现在不做回传了，所以上电配置一次就够：
+	// 之后每帧只要写 TX FIFO 再拉一下 CE（见 Int_SI24R1_TxPacket），
+	// 不用再切模式、也不用切回接收模式开接收窗口等回传。
+	Int_SI24R1_TX_Mode();
 	debug_printf("SI24R1 Init Success!\r\n");
 	return 0;
 }
