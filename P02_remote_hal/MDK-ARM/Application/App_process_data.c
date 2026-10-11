@@ -43,53 +43,6 @@ void App_calibrate_joystick(void)
 }
 
 /**
- * @brief 如果freeRTOS的两个任务优先级相等 => 两个任务会交替运行
- *
- */
-
-/**
- * @brief 处理按键数据 => 如果有按键按下 需要进行对应的记录
- *
- */
-void App_process_key_data(void)
-{
-    Key_type key = Int_key_get();
-    // 根据按键的值进行记录  => 如果进行摇杆的校准 => 将按键的值调整为0
-    if (key == KEY_UP)
-    {
-        // 向前飞微调 => 俯仰角+
-        key_pit_offset += 10;
-    }
-    else if (key == KEY_DOWN)
-    {
-        // 向后飞微调 => 俯仰角-
-        key_pit_offset -= 10;
-    }
-    else if (key == KEY_LEFT)
-    {
-        key_roll_offset -= 10;
-    }
-    else if (key == KEY_RIGHT)
-    {
-        key_roll_offset += 10;
-    }
-    else if (key == KEY_LEFT_X)
-    {
-        remote_data.shutdown = 1;
-    }
-    else if (key == KEY_RIGHT_X)
-    {
-        remote_data.fix_height = 1;
-    }
-    else if (key == KEY_RIGHT_X_LONG)
-    {
-        // 校准摇杆 => 等到摇杆写完之后才知道怎么校准
-        // 触发校准之后  摇杆的值THR为0  YAW PIT ROL 为500
-        App_calibrate_joystick();
-    }
-}
-
-/**
  * @brief 处理摇杆数据  => 修正极性相位和标准值
  *
  */

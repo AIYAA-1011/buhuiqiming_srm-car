@@ -22,8 +22,7 @@
 #define LINE4_Y 38
 
 /* ģʽ */
-#define MODE_CHASSIS 0
-#define MODE_ARM     1
+/* MODE_CHASSIS / MODE_ARM are defined in App_process_data.h */
 
 /* ״̬��ĸ */
 #define ACT_NONE  ' '

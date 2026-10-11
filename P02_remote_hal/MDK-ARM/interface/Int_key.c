@@ -1,118 +1,45 @@
 #include "Int_key.h"
 
+/* 去抖：连续 KEY_DEBOUNCE_CNT 次读数一致才认可
+ * key_task 周期 20ms => 2 次约 20ms 的确认延迟 */
+#define KEY_DEBOUNCE_CNT 2
+
 /**
- * @brief 获取当前按键是否被按下
+ * @brief 扫描一次按键（非阻塞）
  *
- * @return Key_type KEY_NONE:没有按键按下  其他都是对应被按键的标记
+ * 低电平有效：按键另一端接地，MCU 引脚配了内部上拉。
  */
-Key_type Int_key_get(void)
+uint8_t Int_key_scan(void)
 {
-    if (HAL_GPIO_ReadPin(KEY_UP_GPIO_Port, KEY_UP_Pin) == GPIO_PIN_RESET)
-    {
-        // 1. 电弧抖动 => 需要进行消抖
-        vTaskDelay(5);
-        if (HAL_GPIO_ReadPin(KEY_UP_GPIO_Port, KEY_UP_Pin) == GPIO_PIN_RESET)
-        {
-            // 2. 人按下的时间通常比较长  =>  为了不被多次判断 => 等待抬起按键才返回
-            while (HAL_GPIO_ReadPin(KEY_UP_GPIO_Port, KEY_UP_Pin) == GPIO_PIN_RESET)
-            {
-                vTaskDelay(1);
-            }
+    static uint8_t s_stable   = 0; /* 去抖之后稳定下来的按键状态 */
+    static uint8_t s_last_raw = 0; /* 上一次的原始读数 */
+    static uint8_t s_cnt      = 0; /* 连续读数一致的次数 */
+    uint8_t raw = 0;
 
-            // KEY_UP被按下
-            return KEY_UP;
+    if (HAL_GPIO_ReadPin(KEY_UP_GPIO_Port,      KEY_UP_Pin)      == GPIO_PIN_RESET) raw |= KEY_UP;
+    if (HAL_GPIO_ReadPin(KEY_DOWN_GPIO_Port,    KEY_DOWN_Pin)    == GPIO_PIN_RESET) raw |= KEY_DOWN;
+    if (HAL_GPIO_ReadPin(KEY_LEFT_GPIO_Port,    KEY_LEFT_Pin)    == GPIO_PIN_RESET) raw |= KEY_LEFT;
+    if (HAL_GPIO_ReadPin(KEY_RIGHT_GPIO_Port,   KEY_RIGHT_Pin)   == GPIO_PIN_RESET) raw |= KEY_RIGHT;
+    if (HAL_GPIO_ReadPin(KEY_LEFT_X_GPIO_Port,  KEY_LEFT_X_Pin)  == GPIO_PIN_RESET) raw |= KEY_LEFT_X;
+    if (HAL_GPIO_ReadPin(KEY_RIGHT_X_GPIO_Port, KEY_RIGHT_X_Pin) == GPIO_PIN_RESET) raw |= KEY_RIGHT_X;
+
+    if (raw == s_last_raw)
+    {
+        if (s_cnt < KEY_DEBOUNCE_CNT)
+        {
+            s_cnt++;
         }
     }
-    else if (HAL_GPIO_ReadPin(KEY_DOWN_GPIO_Port, KEY_DOWN_Pin) == GPIO_PIN_RESET)
+    else
     {
-        // 1. 电弧抖动 => 需要进行消抖
-        vTaskDelay(5);
-        if (HAL_GPIO_ReadPin(KEY_DOWN_GPIO_Port, KEY_DOWN_Pin) == GPIO_PIN_RESET)
-        {
-            // 2. 人按下的时间通常比较长  =>  为了不被多次判断 => 等待抬起按键才返回
-            while (HAL_GPIO_ReadPin(KEY_DOWN_GPIO_Port, KEY_DOWN_Pin) == GPIO_PIN_RESET)
-            {
-                vTaskDelay(1);
-            }
-            // KEY_DOWN被按下
-            return KEY_DOWN;
-        }
-    }
-    else if (HAL_GPIO_ReadPin(KEY_LEFT_GPIO_Port, KEY_LEFT_Pin) == GPIO_PIN_RESET)
-    {
-        // 1. 电弧抖动 => 需要进行消抖
-        vTaskDelay(5);
-        if (HAL_GPIO_ReadPin(KEY_LEFT_GPIO_Port, KEY_LEFT_Pin) == GPIO_PIN_RESET)
-        {
-            // 2. 人按下的时间通常比较长  =>  为了不被多次判断 => 等待抬起按键才返回
-            while (HAL_GPIO_ReadPin(KEY_LEFT_GPIO_Port, KEY_LEFT_Pin) == GPIO_PIN_RESET)
-            {
-                vTaskDelay(1);
-            }
-            // KEY_LEFT被按下
-            return KEY_LEFT;
-        }
-    }
-    else if (HAL_GPIO_ReadPin(KEY_RIGHT_GPIO_Port, KEY_RIGHT_Pin) == GPIO_PIN_RESET)
-    {
-        // 1. 电弧抖动 => 需要进行消抖
-        vTaskDelay(5);
-        if (HAL_GPIO_ReadPin(KEY_RIGHT_GPIO_Port, KEY_RIGHT_Pin) == GPIO_PIN_RESET)
-        {
-            // 2. 人按下的时间通常比较长  =>  为了不被多次判断 => 等待抬起按键才返回
-            while (HAL_GPIO_ReadPin(KEY_RIGHT_GPIO_Port, KEY_RIGHT_Pin) == GPIO_PIN_RESET)
-            {
-                vTaskDelay(1);
-            }
-            // KEY_RIGHT被按下
-            return KEY_RIGHT;
-        }
+        s_last_raw = raw;
+        s_cnt = 1;
     }
 
-    // 左上按键
-    else if (HAL_GPIO_ReadPin(KEY_LEFT_X_GPIO_Port, KEY_LEFT_X_Pin) == GPIO_PIN_RESET)
+    if (s_cnt >= KEY_DEBOUNCE_CNT)
     {
-        // 1. 电弧抖动 => 需要进行消抖
-        vTaskDelay(5);
-        if (HAL_GPIO_ReadPin(KEY_LEFT_X_GPIO_Port, KEY_LEFT_X_Pin) == GPIO_PIN_RESET)
-        {
-            // 2. 人按下的时间通常比较长  =>  为了不被多次判断 => 等待抬起按键才返回
-            while (HAL_GPIO_ReadPin(KEY_LEFT_X_GPIO_Port, KEY_LEFT_X_Pin) == GPIO_PIN_RESET)
-            {
-                vTaskDelay(1);
-            }
-
-            // 左上按键被按下
-            return KEY_LEFT_X;
-        }
-    }
-    // 右上按键
-    else if (HAL_GPIO_ReadPin(KEY_RIGHT_X_GPIO_Port, KEY_RIGHT_X_Pin) == GPIO_PIN_RESET)
-    {
-        // 此时开始计时 => 长按为超过1s
-        TickType_t count1 = xTaskGetTickCount();
-        // 1. 电弧抖动 => 需要进行消抖
-        vTaskDelay(5);
-        if (HAL_GPIO_ReadPin(KEY_RIGHT_X_GPIO_Port, KEY_RIGHT_X_Pin) == GPIO_PIN_RESET)
-        {
-            // 被人按下 不是电弧抖动
-            while (HAL_GPIO_ReadPin(KEY_RIGHT_X_GPIO_Port, KEY_RIGHT_X_Pin) == GPIO_PIN_RESET)
-            {
-                // 1ms的时间 cpu是释放的
-                vTaskDelay(1);
-            }
-            TickType_t count2 = xTaskGetTickCount();
-            if (count2 - count1 > 1000)
-            {
-                return KEY_RIGHT_X_LONG;
-            }
-            else
-            {
-                return KEY_RIGHT_X;
-            }
-        }
+        s_stable = raw;
     }
 
-    // 没有按键按下
-    return KEY_NONE;
+    return s_stable;
 }

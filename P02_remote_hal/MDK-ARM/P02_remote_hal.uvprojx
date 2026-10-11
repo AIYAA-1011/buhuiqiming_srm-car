@@ -1167,6 +1167,16 @@
               <FileType>5</FileType>
               <FilePath>.\Application\App_display.h</FilePath>
             </File>
+            <File>
+              <FileName>App_command.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>.\Application\App_command.c</FilePath>
+            </File>
+            <File>
+              <FileName>App_command.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>.\Application\App_command.h</FilePath>
+            </File>
           </Files>
         </Group>
         <Group>

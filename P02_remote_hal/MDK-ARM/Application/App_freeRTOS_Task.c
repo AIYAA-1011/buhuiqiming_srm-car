@@ -101,10 +101,14 @@ void joy_task(void *args)
 void key_task(void *args)
 {
     TickType_t xLastWakeTime = xTaskGetTickCount();
+
+    // 初始化命令状态（模式 / 急停 / 夹爪 / 预设）
+    App_command_init();
+
     while (1)
     {
-        // 统一的处理方式
-        App_process_key_data();
+        // 扫描按键并处理事件（内部非阻塞，绝不等待松手）
+        App_command_scan();
         vTaskDelayUntil(&xLastWakeTime, KEY_TASK_PERIOD);
     }
 }
@@ -136,10 +140,13 @@ void oled_task(void *args)
     xLastWakeTime = xTaskGetTickCount();
     while (1)
     {
+        /* 模式 和 状态字母 来自按键命令 */
+        ui_data.mode   = cmd.mode;
+        ui_data.action = cmd.action;
+
         /* TODO(P3): 这里改成读取新的轴处理结果（-500 ~ +500）
          * 现在临时用现有的 remote_data（0-1000）减 500 顶替，
          * 目的只是先把"摇杆 -> 屏幕"这条显示链路验证通 */
-        ui_data.mode    = MODE_CHASSIS;
         ui_data.axis[0] = remote_data.thr - 500;
         ui_data.axis[1] = remote_data.yaw - 500;
         ui_data.axis[2] = remote_data.pit - 500;

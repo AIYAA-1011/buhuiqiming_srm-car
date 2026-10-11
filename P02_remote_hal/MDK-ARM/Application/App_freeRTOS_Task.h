@@ -9,6 +9,7 @@
 #include "App_process_data.h"
 #include "App_transmit_data.h"
 #include "App_display.h"
+#include "App_command.h"
 /**
  * @brief 启动freeRTOS操作系统
  * 
