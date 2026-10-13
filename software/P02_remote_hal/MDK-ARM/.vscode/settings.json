@@ -1,0 +1,21 @@
+{
+    "files.associations": {
+        "com_debug.h": "c",
+        "stdio.h": "c",
+        "stdarg.h": "c",
+        "usart.h": "c",
+        "app_freertos_task.h": "c",
+        "int_ip5305t.h": "c",
+        "main.h": "c",
+        "freertos.h": "c",
+        "int_si24r1.h": "c",
+        "int_key.h": "c",
+        "int_joystick.h": "c",
+        "adc.h": "c",
+        "freertosconfig.h": "c",
+        "app_process_data.h": "c",
+        "com_tool.h": "c",
+        "app_transmit_data.h": "c",
+        "app_display.h": "c"
+    }
+}

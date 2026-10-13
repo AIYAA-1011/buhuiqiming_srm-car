@@ -1,0 +1,19 @@
+# CLion
+.idea/
+cmake-build-*/
+
+# Keil MDK
+*.uvoptx
+*.uvguix.*
+*.hex
+*.axf
+*.o
+*.d
+*.crf
+*.lnp
+*.i
+*.map
+
+# 编译输出
+build/
+Debug/
