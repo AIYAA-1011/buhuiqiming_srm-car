@@ -157,11 +157,11 @@ void App_display_show(void)
     if (!ui_data.armed)
     {
         /* 还没解锁：用物理轴标签，方便对着屏幕把四个杆都放回中位
-         * 左列 = 左摇杆（TH 上下 / YW 左右），右列 = 右摇杆（PT 上下 / RL 左右） */
-        pair_str(buf, "TH", ui_data.axis[0], "PT", ui_data.axis[2]);
+         * 左列 = 左摇杆（LY 上下 / LX 左右），右列 = 右摇杆（RY 上下 / RX 左右） */
+        pair_str(buf, "LY", ui_data.axis[0], "RY", ui_data.axis[2]);
         oled_line(LINE3_Y, buf);
 
-        pair_str(buf, "YW", ui_data.axis[1], "RL", ui_data.axis[3]);
+        pair_str(buf, "LX", ui_data.axis[1], "RX", ui_data.axis[3]);
         oled_line(LINE4_Y, buf);
     }
     else if (ui_data.mode == MODE_ARM)

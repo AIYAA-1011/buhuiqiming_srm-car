@@ -16,8 +16,8 @@
  * 左边一列 = 左摇杆的两个轴，右边一列 = 右摇杆的两个轴。
  * 具体标签随「模式」和「是否解锁」变化：
  *
- *   未解锁    TH 左杆Y | PT 右杆Y
- *             YW 左杆X | RL 右杆X
+ *   未解锁    LY 左杆Y | RY 右杆Y
+ *             LX 左杆X | RX 右杆X
  *
  *   底盘      -- 不使用 | VX 前后
  *             W  自转   | VY 左右
@@ -51,7 +51,7 @@ typedef struct
     uint8_t link_percent; /* 0-100，发送成功率 */
     uint8_t mode;         /* MODE_CHASSIS / MODE_ARM */
     uint8_t armed;        /* 1 = 已解锁（摇杆已回中） */
-    int16_t axis[4];      /* -500 ~ +500，顺序 thr / yaw / pit / rol */
+    int16_t axis[4];      /* -500 ~ +500，顺序 ly / lx / ry / rx */
     char    action;       /* 状态字母 ACT_xxx */
 } Ui_Data;
 

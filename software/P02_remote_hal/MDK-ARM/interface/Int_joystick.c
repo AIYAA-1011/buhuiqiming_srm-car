@@ -25,8 +25,8 @@ void Int_joystick_get(Joystick_Struct *joystick)
 {
     // DMA不依赖与CPU的计算的  所以读取的数据是实时保存到ADC_BUFF中
     // 顺序是自定义的RAN1234  一定要对齐
-    joystick->thr = adc_buff[0];
-    joystick->yaw = adc_buff[1];
-    joystick->pit = adc_buff[2];
-    joystick->rol = adc_buff[3];
+    joystick->ly = adc_buff[0];
+    joystick->lx = adc_buff[1];
+    joystick->ry = adc_buff[2];
+    joystick->rx = adc_buff[3];
 }
