@@ -17,3 +17,9 @@ cmake-build-*/
 # 编译输出
 build/
 Debug/
+
+# 备份目录（调试过程中生成）
+**/MDK-ARM/_backup*/
+
+# Keil 编译输出目录
+**/MDK-ARM/P02_remote_hal/

@@ -213,6 +213,14 @@ void App_command_get_output(int16_t *out)
     {
         out[k] = axis_value[k];
     }
+
+    /* 底盘模式下左杆上下（ly）不使用，直接发 0。
+     * 这是防御性处理：万一小车端误用了这个字段，
+     * 收到的也是 0（= 停止），而不是一个无意义的摇杆值。 */
+    if (cmd.mode == MODE_CHASSIS)
+    {
+        out[0] = 0;
+    }
 }
 
 /**
