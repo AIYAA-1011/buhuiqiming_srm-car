@@ -135,9 +135,19 @@ static void App_command_update_arm(void)
             cmd_log("CALIB: wide window fallback\r\n");
         }
 
-        App_calibrate_joystick(); /* 采样定中位，并写进 Flash */
-        s_calibrated = 1;
-        cmd_log("CALIBRATED\r\n");
+        if (App_calibrate_joystick()) /* 采样定中位，并写进 Flash */
+        {
+            s_calibrated = 1;
+            cmd_log("CALIBRATED\r\n");
+        }
+        else
+        {
+            /* 中位越界，这次不算数：继续保持冻结，等杆真正摆到中位。
+             * 重新计时，避免下一拍立刻又走"保底窗口"分支、反复刷日志。 */
+            s_hold_enter_tick = xTaskGetTickCount();
+            cmd_log("CALIB REJECTED - center the sticks\r\n");
+            return;
+        }
     }
     else
     {
@@ -155,22 +165,93 @@ static void App_command_update_arm(void)
     cmd_log("ARMED\r\n");
 }
 
+/* 预设互锁的闪烁反馈
+ *
+ * 按了"无效的"预设键（当前已经有别的预设）时，让当前状态字母闪 2 下，
+ * 告诉操作者"这次按键被忽略了，要先按同一个键取消"。
+ *
+ * key_task 周期 20ms => 每 PRESET_FLASH_PHASE 拍翻转一次明暗。
+ * 相位取 200ms，比 oled_task 的 100ms 周期长，保证屏幕一定采样得到
+ * 明暗两相，不会因为 100ms 对 100ms 正好对齐而看起来"根本没闪"。
+ *
+ * 只改 cmd.action（纯显示量，不进无线数据帧），所以不影响发出去的帧内容。
+ */
+#define PRESET_FLASH_TICKS 40 /* 40 拍 x 20ms = 800ms */
+#define PRESET_FLASH_PHASE 10 /* 10 拍 x 20ms = 200ms 一个相位 */
+
+static uint16_t s_flash_ticks = 0;
+
 /**
- * @brief 预设姿态：同一个键再按一次 = 取消；按别的键 = 直接切换
+ * @brief 预设编号 -> 屏幕上显示的状态字母
+ */
+static char preset_letter(uint8_t preset)
+{
+    switch (preset)
+    {
+    case CMD_PRESET_HOLE: return CMD_ACTION_HOLE;
+    case CMD_PRESET_PICK: return CMD_ACTION_PICK;
+    case CMD_PRESET_PUT:  return CMD_ACTION_PUT;
+    default:              return CMD_ACTION_NONE;
+    }
+}
+
+/**
+ * @brief 闪烁反馈推进一拍（每 20ms 调一次）
+ *
+ * 中途如果预设被取消、或者按下急停，闪烁立即作废：
+ * 直接返回，不去覆盖那些分支已经设好的 cmd.action。
+ */
+static void preset_flash_tick(void)
+{
+    if (!s_flash_ticks)
+    {
+        return;
+    }
+
+    s_flash_ticks--;
+
+    if (cmd.estop || cmd.preset == CMD_PRESET_NONE)
+    {
+        s_flash_ticks = 0;
+        return;
+    }
+
+    cmd.action = ((s_flash_ticks / PRESET_FLASH_PHASE) & 1)
+                     ? CMD_ACTION_NONE
+                     : preset_letter(cmd.preset);
+}
+
+/**
+ * @brief 预设姿态：同一个键再按一次 = 取消；已经有别的预设时按别的键 = 无效
+ *
+ * 为什么要互锁：一个预设是一整套机械臂（和底盘）动作序列。执行到一半被
+ * 另一个预设顶掉，机械臂会从当前姿态直接拐向新轨迹，带着矿石时容易把矿
+ * 甩掉、或者撞到结构。所以必须先明确取消（按同一个键，或者推一下摇杆让
+ * 操作员接管），才能启动另一个预设。
  */
 static void App_preset_toggle(uint8_t target, char letter)
 {
     if (cmd.preset == target)
     {
-        cmd.preset = CMD_PRESET_NONE;
-        cmd.action = CMD_ACTION_NONE;
+        /* 同一个键 -> 取消 */
+        cmd.preset    = CMD_PRESET_NONE;
+        cmd.action    = CMD_ACTION_NONE;
+        s_flash_ticks = 0;
         cmd_log("PRESET -> CANCEL\r\n");
+    }
+    else if (cmd.preset == CMD_PRESET_NONE)
+    {
+        /* 当前没有预设 -> 启动 */
+        cmd.preset    = target;
+        cmd.action    = letter;
+        s_flash_ticks = 0;
+        cmd_log("PRESET -> %c\r\n", letter);
     }
     else
     {
-        cmd.preset = target;
-        cmd.action = letter;
-        cmd_log("PRESET -> %c\r\n", letter);
+        /* 已经有别的预设 -> 忽略这次按键，闪一下当前字母作为反馈 */
+        s_flash_ticks = PRESET_FLASH_TICKS;
+        cmd_log("PRESET BUSY (%c) - cancel it first\r\n", preset_letter(cmd.preset));
     }
 }
 
@@ -330,6 +411,9 @@ void App_command_scan(void)
 
     /* ---------- 回中解锁检查 ---------- */
     App_command_update_arm();
+
+    /* ---------- 预设互锁的闪烁反馈：每 20ms 推进一拍 ---------- */
+    preset_flash_tick();
 
     s_key_last = now;
 }
