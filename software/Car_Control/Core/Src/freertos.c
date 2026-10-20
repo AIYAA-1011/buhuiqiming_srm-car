@@ -50,10 +50,8 @@
 osThreadId MotorTaskHandle;
 osThreadId RemoteTaskHandle;
 osThreadId ArmTaskHandle;
-osThreadId OledTaskHandle;
+osThreadId DisplayTaskHandle;
 osThreadId SafetyTaskHandle;
-osMessageQId qMoterCmdHandle;
-osMessageQId qArmCmdHandle;
 
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN FunctionPrototypes */
@@ -63,13 +61,42 @@ osMessageQId qArmCmdHandle;
 void StartMotorTask(void const * argument);
 void StartRemoteTask(void const * argument);
 void StartArmTask(void const * argument);
-void StartOledTask(void const * argument);
+void StartDisplayTask(void const * argument);
 void StartSafetyTask(void const * argument);
 
 void MX_FREERTOS_Init(void); /* (MISRA C 2004 rule 8.1) */
 
 /* GetIdleTaskMemory prototype (linked to static allocation support) */
 void vApplicationGetIdleTaskMemory( StaticTask_t **ppxIdleTaskTCBBuffer, StackType_t **ppxIdleTaskStackBuffer, uint32_t *pulIdleTaskStackSize );
+
+/* Hook prototypes */
+void vApplicationStackOverflowHook(xTaskHandle xTask, signed char *pcTaskName);
+void vApplicationMallocFailedHook(void);
+
+/* USER CODE BEGIN 4 */
+__weak void vApplicationStackOverflowHook(xTaskHandle xTask, signed char *pcTaskName)
+{
+   /* Run time stack overflow checking is performed if
+   configCHECK_FOR_STACK_OVERFLOW is defined to 1 or 2. This hook function is
+   called if a stack overflow is detected. */
+}
+/* USER CODE END 4 */
+
+/* USER CODE BEGIN 5 */
+__weak void vApplicationMallocFailedHook(void)
+{
+   /* vApplicationMallocFailedHook() will only be called if
+   configUSE_MALLOC_FAILED_HOOK is set to 1 in FreeRTOSConfig.h. It is a hook
+   function that will get called if a call to pvPortMalloc() fails.
+   pvPortMalloc() is called internally by the kernel whenever a task, queue,
+   timer or semaphore is created. It is also called by various parts of the
+   demo application. If heap_1.c or heap_2.c are used, then the size of the
+   heap available to pvPortMalloc() is defined by configTOTAL_HEAP_SIZE in
+   FreeRTOSConfig.h, and the xPortGetFreeHeapSize() API function can be used
+   to query the size of free heap space that remains (although it does not
+   provide information on how the remaining heap might be fragmented). */
+}
+/* USER CODE END 5 */
 
 /* USER CODE BEGIN GET_IDLE_TASK_MEMORY */
 static StaticTask_t xIdleTaskTCBBuffer;
@@ -106,15 +133,6 @@ void MX_FREERTOS_Init(void) {
   /* start timers, add new ones, ... */
   /* USER CODE END RTOS_TIMERS */
 
-  /* Create the queue(s) */
-  /* definition and creation of qMoterCmd */
-  osMessageQDef(qMoterCmd, 1, 8);
-  qMoterCmdHandle = osMessageCreate(osMessageQ(qMoterCmd), NULL);
-
-  /* definition and creation of qArmCmd */
-  osMessageQDef(qArmCmd, 1, 8);
-  qArmCmdHandle = osMessageCreate(osMessageQ(qArmCmd), NULL);
-
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
   /* USER CODE END RTOS_QUEUES */
@@ -132,9 +150,9 @@ void MX_FREERTOS_Init(void) {
   osThreadDef(ArmTask, StartArmTask, osPriorityNormal, 0, 192);
   ArmTaskHandle = osThreadCreate(osThread(ArmTask), NULL);
 
-  /* definition and creation of OledTask */
-  osThreadDef(OledTask, StartOledTask, osPriorityBelowNormal, 0, 192);
-  OledTaskHandle = osThreadCreate(osThread(OledTask), NULL);
+  /* definition and creation of DisplayTask */
+  osThreadDef(DisplayTask, StartDisplayTask, osPriorityBelowNormal, 0, 192);
+  DisplayTaskHandle = osThreadCreate(osThread(DisplayTask), NULL);
 
   /* definition and creation of SafetyTask */
   osThreadDef(SafetyTask, StartSafetyTask, osPriorityRealtime, 0, 128);
@@ -200,22 +218,22 @@ __weak void StartArmTask(void const * argument)
   /* USER CODE END StartArmTask */
 }
 
-/* USER CODE BEGIN Header_StartOledTask */
+/* USER CODE BEGIN Header_StartDisplayTask */
 /**
-* @brief Function implementing the OledTask thread.
+* @brief Function implementing the DisplayTask thread.
 * @param argument: Not used
 * @retval None
 */
-/* USER CODE END Header_StartOledTask */
-__weak void StartOledTask(void const * argument)
+/* USER CODE END Header_StartDisplayTask */
+__weak void StartDisplayTask(void const * argument)
 {
-  /* USER CODE BEGIN StartOledTask */
+  /* USER CODE BEGIN StartDisplayTask */
   /* Infinite loop */
   for(;;)
   {
     osDelay(1);
   }
-  /* USER CODE END StartOledTask */
+  /* USER CODE END StartDisplayTask */
 }
 
 /* USER CODE BEGIN Header_StartSafetyTask */
