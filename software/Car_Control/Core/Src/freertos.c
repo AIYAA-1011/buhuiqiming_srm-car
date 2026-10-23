@@ -25,7 +25,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "remote_task.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -134,7 +134,8 @@ void MX_FREERTOS_Init(void) {
   /* USER CODE END RTOS_TIMERS */
 
   /* USER CODE BEGIN RTOS_QUEUES */
-  /* add queues, ... */
+  /* 长度 1：只保存"最新一帧"，remote_task 用 xQueueOverwrite 覆盖写 */
+  q_remote_cmd = xQueueCreate(1, sizeof(remote_cmd_t));
   /* USER CODE END RTOS_QUEUES */
 
   /* Create the thread(s) */
