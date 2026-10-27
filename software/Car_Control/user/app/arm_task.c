@@ -5,23 +5,24 @@
 // 第 2 步：初始化 50 Hz / 设脉宽 / 开关输出
 // 第 3 步：台架测试（直接给脉宽）
 // 第 5 步：标定表 + 角度换算 + 软限幅 + 匀速走到目标
+// 第 6 步：接遥控器 —— 摇杆正负决定方向，固定速度积分，松手停
 //
-// 上电 → 探测 → 初始化 → 按标定表把 5 路写成 home → 等 50 ms → 开 OE
-// 然后进入台架模式：
-//   g_test_mode=2（默认）改 g_test_deg[i]，关节按 speed_dps 匀速走过去
-//   g_test_mode=1        改 g_test_us[i]，直接给脉宽（标定用）
-//   g_test_mode=0        冻结，不再下发
-//
-// 这个版本没有接遥控器：遥控器发什么都不影响机械臂。
+// 三种模式（Ozone 改 g_arm_mode）：
+//   0 = 遥控（默认）
+//   1 = 台架，直接给脉宽 g_test_us[]
+//   2 = 台架，给角度 g_test_deg10[]（0.1° 单位），匀速走过去
 //
 
 #include "arm_task.h"
+#include "arm_debug.h"
 #include "pca9685.h"
-#include "debug.h"
+#include "remote_task.h"
 #include "cmsis_os.h"
+#include "FreeRTOS.h"
+#include "task.h"
+#include <math.h>
 
-/* 上电默认进入哪个台架模式 */
-#define ARM_BOOT_TEST_MODE      ARM_TEST_DEG
+/* ---------------- 参数 ---------------- */
 
 /* 上电时芯片可能还没准备好，重试几次 */
 #define ARM_PROBE_RETRY         3u
@@ -40,19 +41,26 @@
 #define ARM_US_LO               500.0f
 #define ARM_US_SPAN             2000.0f
 
-/* 软限位在实测机械限位的基础上再往里收一点，别贴着限位停 */
+/* 软限位在实测机械限位的基础上再往里收一点 */
 #define ARM_SOFT_MARGIN_DEG     2.0f
 
-/* ---------------- 标定表 ----------------
+/* 判定"顶到限位"的容差 */
+#define ARM_LIMIT_EPS_DEG       0.01f
+
+/* ---------------- 关节参数表 ----------------
  *
  * 只改这一张表。改完重新编译，别的都不用动。
  *
- *   min_us / max_us : 实测的机械行程端点
- *   home_us         : 上电收拢姿态
- *   deg_range       : 舵机规格 180 或 270
- *   dir             : +1 / -1，角度变大时脉宽往哪边走
- *   speed_dps       : 走目标时的角速度（°/s），别低于 30
- *   enabled         : 0 = 还没标定，禁止动作（夹爪现在就是这个状态）
+ *   min_us / max_us  : 实测的机械行程端点
+ *   home_us          : 上电姿态
+ *   deg_range        : 舵机规格 180 或 270
+ *   dir              : +1 / -1，角度变大时脉宽往哪边走
+ *   speed_dps        : 摇杆推到底时的角速度（°/s）
+ *   acc_dps2         : 加速度上限（°/s²）。越大启动/停止越猛，电流冲击越大
+ *   enabled          : 0 = 还没标定，禁止动作
+ *   open_us/close_us : 只有夹爪用 —— 两个工作档位；其它关节填 0
+ *
+ * 夹爪的 home_us 要和 open_us 写成一样的（上电张开）。
  */
 typedef struct
 {
@@ -63,18 +71,35 @@ typedef struct
     uint16_t    deg_range;
     int8_t      dir;
     uint16_t    speed_dps;
+    uint16_t    acc_dps2;
     uint8_t     enabled;
     const char *name;
+    uint16_t    open_us;    /* 夹爪：工作张开 */
+    uint16_t    close_us;   /* 夹爪：工作闭合 */
 } arm_joint_t;
 
 static const arm_joint_t arm_cfg[ARM_JOINT_COUNT] =
 {
-    /* ch   min_us  max_us  home   range  dir  dps   en  name          */
-    { 0u,  1460u,  2500u,  1460u,  270u,  +1,  60u,  1u, "boom"        },
-    { 1u,   700u,  2500u,   700u,  270u,  +1,  60u,  1u, "forearm"     },
-    { 2u,   500u,  2500u,  1600u,  180u,  +1,  40u,  1u, "wrist_pitch" },
-    { 3u,   500u,  2500u,  1900u,  180u,  +1,  40u,  1u, "wrist_roll"  },
-    { 4u,   500u,  2500u,  1500u,  180u,  +1,  90u,  0u, "gripper"     },  /* 还没标定 */
+    /* ch  min_us max_us home   range dir  dps   acc   en  name           open    close */
+    { 0u,  1460u, 2500u, 1460u, 270u, +1,  60u,  300u, 1u, "boom",          0u,      0u },
+    { 1u,   700u, 2500u,  700u, 270u, +1,  60u,  300u, 1u, "forearm",       0u,      0u },
+    { 2u,   500u, 2500u, 1600u, 180u, +1,  40u,  500u, 1u, "wrist_pitch",   0u,      0u },
+    { 3u,   500u, 2500u, 1900u, 180u, +1,  40u,  500u, 1u, "wrist_roll",    0u,      0u },
+    { 4u,   500u, 1600u, 1300u, 180u, +1,  90u,  800u, 1u, "gripper",    1300u,   650u },
+};
+
+/* 摇杆 → 关节 的符号
+ *
+ * 对应关系（遥控器机械臂模式）：
+ *   ly = 大臂   lx = 小臂   ry = 腕俯仰   rx = 腕旋转
+ *
+ * 推杆方向 */
+static const int8_t arm_axis_dir[4] =
+{
+    +1,   /* ly -> 大臂 */
+    +1,   /* lx -> 小臂 */
+    +1,   /* ry -> 腕俯仰 */
+    +1,   /* rx -> 腕旋转 */
 };
 
 /* ---------------- 运行时状态 ---------------- */
@@ -87,17 +112,30 @@ typedef struct
 
 static arm_soft_t s_soft[ARM_JOINT_COUNT];
 static float      s_pos_deg[ARM_JOINT_COUNT];   /* 当前命令位置 */
-static float      s_tgt_deg[ARM_JOINT_COUNT];   /* 目标位置 */
+static float      s_vel_dps[ARM_JOINT_COUNT];   /* 当前速度（受加速度限制） */
+static float      s_tgt_deg[ARM_JOINT_COUNT];   /* 目标位置（台架角度模式用） */
+static float      s_grip_open_deg;              /* 夹爪张开角度 */
+static float      s_grip_close_deg;             /* 夹爪闭合角度 */
+static uint8_t    s_grip_state;                 /* 0 = 张开，1 = 闭合（只用于打印） */
+static int16_t    s_req_deg10[ARM_JOINT_COUNT]; /* 上次请求的目标（0.1°） */
 static uint8_t    s_moving[ARM_JOINT_COUNT];    /* 正在走（用于打印 arrived） */
+static uint8_t    s_at_limit[ARM_JOINT_COUNT];  /* 已经在限位上（只提示一次） */
 static uint16_t   s_last_us[ARM_JOINT_COUNT];   /* 上一次真正下发成功的脉宽 */
 static uint8_t    s_i2c_fault;
 static uint32_t   s_last_tick;
 
-/* ---------------- 台架变量（Ozone 改） ---------------- */
+/* ---------------- 全局变量 ---------------- */
 
-volatile uint8_t  g_test_mode = ARM_BOOT_TEST_MODE;
+volatile uint8_t  g_arm_mode = ARM_MODE_REMOTE;
 volatile uint16_t g_test_us[ARM_JOINT_COUNT];
-volatile float    g_test_deg[ARM_JOINT_COUNT];
+volatile int16_t  g_test_deg10[ARM_JOINT_COUNT];
+
+/* ---------------- 遥控门控 ---------------- */
+
+static uint8_t  s_last_flags;
+static uint8_t  s_gate_cur;         /* 当前门控状态 */
+static int16_t  s_last_axis[4];     /* ly lx ry rx，最近一帧 */
+static uint8_t  s_mode_last = ARM_MODE_REMOTE;
 
 /* ---------------- 换算 ---------------- */
 
@@ -105,7 +143,7 @@ volatile float    g_test_deg[ARM_JOINT_COUNT];
  * @brief 脉宽 → 角度
  *
  * 锚点：500 us = 0°，2500 us = deg_range。
- * dir = -1 时反向，这样"角度变大"永远等于"关节往正方向动"。
+ * dir = -1 时反向。
  */
 static float arm_us_to_deg(const arm_joint_t *j, uint16_t us)
 {
@@ -179,8 +217,7 @@ static uint16_t arm_deg_to_us(const arm_joint_t *j, float deg)
 /**
  * @brief 由标定表算出软限位、home 角度，并把台架变量初始化成 home
  *
- * 这样上电时 g_test_deg / g_test_us 就等于 home，
- * 不会因为默认值 0 让关节一上电就飞过去。
+ * 上电时 g_test_deg10 / g_test_us 就等于 home.
  */
 static void arm_cal_init(void)
 {
@@ -212,29 +249,60 @@ static void arm_cal_init(void)
 
         home_deg = arm_us_to_deg(j, j->home_us);
 
-        /* home 是人为选定的姿态，优先保证它可达。
-         * 如果 home 正好在机械端点（比如大臂 1460 = min_us），
-         * 留出来的余量会让 home 落到软限外 —— 这时把软限放宽到 home，
-         * 而不是把 home 夹进来（夹进来会导致上电就动一下）。 */
+
         if (home_deg < s_soft[i].deg_min)
         {
             s_soft[i].deg_min = home_deg;
-            debug_printf("[ARM] ch%u home at lower end, margin relaxed\r\n", (unsigned)i);
+            arm_debug_printf("[ARM] ch%u home at lower end, margin relaxed\r\n", (unsigned)i);
         }
         if (home_deg > s_soft[i].deg_max)
         {
             s_soft[i].deg_max = home_deg;
-            debug_printf("[ARM] ch%u home at upper end, margin relaxed\r\n", (unsigned)i);
+            arm_debug_printf("[ARM] ch%u home at upper end, margin relaxed\r\n", (unsigned)i);
         }
 
-        s_pos_deg[i] = home_deg;
-        s_tgt_deg[i] = home_deg;
-        s_moving[i]  = 0u;
-        s_last_us[i] = j->home_us;
+        s_pos_deg[i]  = home_deg;
+        s_vel_dps[i]  = 0.0f;
+        s_tgt_deg[i]  = home_deg;
+        s_moving[i]   = 0u;
+        s_at_limit[i] = 0u;
+        s_last_us[i]  = j->home_us;
 
-        g_test_us[i]  = j->home_us;
-        g_test_deg[i] = home_deg;
+        s_req_deg10[i] = (int16_t)(home_deg * 10.0f + 0.5f);
+
+        g_test_us[i]   = j->home_us;
+        g_test_deg10[i] = s_req_deg10[i];
     }
+
+    /* 夹爪两个工作角度：由表里的 open_us / close_us 换算，并夹到该关节行程内。
+     * 如果表里漏填（0），就退回 home_us，避免把夹爪驱动到 500us 的极限。 */
+    {
+        uint16_t u;
+
+        u = (arm_cfg[4].open_us != 0u) ? arm_cfg[4].open_us : arm_cfg[4].home_us;
+        if (u < arm_cfg[4].min_us)
+        {
+            u = arm_cfg[4].min_us;
+        }
+        if (u > arm_cfg[4].max_us)
+        {
+            u = arm_cfg[4].max_us;
+        }
+        s_grip_open_deg = arm_us_to_deg(&arm_cfg[4], u);
+
+        u = (arm_cfg[4].close_us != 0u) ? arm_cfg[4].close_us : arm_cfg[4].home_us;
+        if (u < arm_cfg[4].min_us)
+        {
+            u = arm_cfg[4].min_us;
+        }
+        if (u > arm_cfg[4].max_us)
+        {
+            u = arm_cfg[4].max_us;
+        }
+        s_grip_close_deg = arm_us_to_deg(&arm_cfg[4], u);
+    }
+
+    s_grip_state = 0u;      /* 上电默认张开 */
 }
 
 /**
@@ -266,26 +334,93 @@ static int arm_write_home(void)
     return rc;
 }
 
-static void arm_print_cfg(void)
+/* ---------------- 状态快照 ---------------- */
+
+void arm_get_status(arm_status_t *out)
 {
     uint32_t i;
 
+    if (out == 0)
+    {
+        return;
+    }
+
     for (i = 0; i < ARM_JOINT_COUNT; i++)
     {
-        const arm_joint_t *j = &arm_cfg[i];
+        out->pos_deg[i]      = s_pos_deg[i];
+        out->soft_min_deg[i] = s_soft[i].deg_min;
+        out->soft_max_deg[i] = s_soft[i].deg_max;
+        out->last_us[i]      = s_last_us[i];
+    }
 
-        debug_printf("[ARM] ch%u %-11s us %4u..%4u home %4u  deg %3d..%3d (home %3d) dir%s %udps %s\r\n",
-                     (unsigned)i,
-                     j->name,
-                     (unsigned)j->min_us,
-                     (unsigned)j->max_us,
-                     (unsigned)j->home_us,
-                     (int)(s_soft[i].deg_min + 0.5f),
-                     (int)(s_soft[i].deg_max + 0.5f),
-                     (int)(s_pos_deg[i] + 0.5f),
-                     (j->dir > 0) ? "+1" : "-1",
-                     (unsigned)j->speed_dps,
-                     j->enabled ? "on" : "DISABLED");
+    out->axis[0] = s_last_axis[0];
+    out->axis[1] = s_last_axis[1];
+    out->axis[2] = s_last_axis[2];
+    out->axis[3] = s_last_axis[3];
+
+    out->grip_open_deg  = s_grip_open_deg;
+    out->grip_close_deg = s_grip_close_deg;
+
+    out->mode  = g_arm_mode;
+    out->gate  = s_gate_cur;
+    out->flags = s_last_flags;
+}
+
+void arm_get_joint_cfg(uint32_t idx, arm_joint_cfg_t *out)
+{
+    if ((out == 0) || (idx >= ARM_JOINT_COUNT))
+    {
+        return;
+    }
+
+    out->min_us    = arm_cfg[idx].min_us;
+    out->max_us    = arm_cfg[idx].max_us;
+    out->home_us   = arm_cfg[idx].home_us;
+    out->deg_range = arm_cfg[idx].deg_range;
+    out->dir       = arm_cfg[idx].dir;
+    out->speed_dps = arm_cfg[idx].speed_dps;
+    out->acc_dps2  = arm_cfg[idx].acc_dps2;
+    out->enabled   = arm_cfg[idx].enabled;
+    out->name      = arm_cfg[idx].name;
+}
+
+/* ---------------- 输出 ---------------- */
+
+/**
+ * @brief 只在脉宽变化时才写 I2C，写失败只报一次
+ */
+static void arm_apply_us(uint32_t i, uint16_t us)
+{
+    if (us == s_last_us[i])
+    {
+        return;
+    }
+
+    if (pca9685_set_us(arm_cfg[i].ch, us) == 0)
+    {
+        s_last_us[i] = us;
+        s_i2c_fault  = 0u;
+    }
+    else if (s_i2c_fault == 0u)
+    {
+        s_i2c_fault = 1u;
+        arm_debug_printf("[ARM] ch%u I2C write FAIL, holding last value\r\n", (unsigned)i);
+    }
+}
+
+/**
+ * @brief 把每个关节的"当前速度"清零
+ *
+ * 冻结（急停/掉线/切模式）时调用：位置保持不变，但速度归零，
+ * 这样恢复控制时是从 0 开始加速，而不是接着上次的速度冲出去。
+ */
+static void arm_stop_motion(void)
+{
+    uint32_t k;
+
+    for (k = 0; k < ARM_JOINT_COUNT; k++)
+    {
+        s_vel_dps[k] = 0.0f;
     }
 }
 
@@ -321,12 +456,12 @@ static void arm_raw_tick(void)
 
             if (want != applied)
             {
-                debug_printf("[ARM] ch%u: %u -> %u us (clamped)\r\n",
+                arm_debug_printf("[ARM] ch%u: %u -> %u us (clamped)\r\n",
                              (unsigned)i, (unsigned)want, (unsigned)applied);
             }
             else
             {
-                debug_printf("[ARM] ch%u -> %u us\r\n",
+                arm_debug_printf("[ARM] ch%u -> %u us\r\n",
                              (unsigned)i, (unsigned)applied);
             }
 
@@ -338,9 +473,99 @@ static void arm_raw_tick(void)
         else if (s_i2c_fault == 0u)
         {
             s_i2c_fault = 1u;
-            debug_printf("[ARM] ch%u I2C write FAIL, holding last value\r\n", (unsigned)i);
+            arm_debug_printf("[ARM] ch%u I2C write FAIL, holding last value\r\n", (unsigned)i);
         }
     }
+}
+
+/* ---------------- 关节运动（公共） ---------------- */
+
+/**
+ * @brief 让第 i 个关节朝 s_tgt_deg[i] 走一步，带加减速限制
+ *
+ * 按"制动曲线"算允许速度：v = sqrt(2 * acc * 剩余距离)。
+ * 离得远时受 speed_dps 限制，离得近时自动减速，
+ * 这样起步、匀速、刹车都是连续的，不会冲过头也不会抖。
+ *
+ * 台架角度模式、夹爪、以后的预设姿态都用这一个函数。
+ *
+ * @return 1 = 已经到位（位置贴住目标且速度为 0）；0 = 还在走
+ */
+static uint8_t arm_move_toward(uint32_t i, float dt)
+{
+    const arm_joint_t *j   = &arm_cfg[i];
+    float    tgt     = s_tgt_deg[i];
+    float    pos     = s_pos_deg[i];
+    float    vel     = s_vel_dps[i];
+    float    dist    = tgt - pos;
+    float    acc     = (float)j->acc_dps2;
+    float    vmax    = (float)j->speed_dps;
+    float    v_allow = sqrtf(2.0f * acc * fabsf(dist));
+    float    v_tgt;
+
+    if (v_allow > vmax)
+    {
+        v_allow = vmax;
+    }
+
+    if (dist > 0.0f)
+    {
+        v_tgt = v_allow;
+    }
+    else if (dist < 0.0f)
+    {
+        v_tgt = -v_allow;
+    }
+    else
+    {
+        v_tgt = 0.0f;
+    }
+
+    /* 每拍速度最多变化 acc*dt */
+    if (v_tgt > (vel + (acc * dt)))
+    {
+        v_tgt = vel + (acc * dt);
+    }
+    if (v_tgt < (vel - (acc * dt)))
+    {
+        v_tgt = vel - (acc * dt);
+    }
+    vel = v_tgt;
+
+    pos += vel * dt;
+
+    /* 离散步长可能让最后一步越过目标：直接贴住并停车 */
+    if (((dist > 0.0f) && (pos > tgt)) ||
+        ((dist < 0.0f) && (pos < tgt)))
+    {
+        pos = tgt;
+        vel = 0.0f;
+    }
+
+    /* 软限位再保一层 */
+    if (pos < s_soft[i].deg_min)
+    {
+        pos = s_soft[i].deg_min;
+        if (vel < 0.0f)
+        {
+            vel = 0.0f;
+        }
+    }
+    if (pos > s_soft[i].deg_max)
+    {
+        pos = s_soft[i].deg_max;
+        if (vel > 0.0f)
+        {
+            vel = 0.0f;
+        }
+    }
+
+    s_pos_deg[i] = pos;
+    s_vel_dps[i] = vel;
+
+    arm_apply_us(i, arm_deg_to_us(j, pos));
+
+    return ((pos == tgt) && (vel == 0.0f)) ? 1u : 0u;
 }
 
 /* ---------------- 台架：角度模式 ---------------- */
@@ -352,22 +577,21 @@ static void arm_goto_tick(float dt)
     for (i = 0; i < ARM_JOINT_COUNT; i++)
     {
         const arm_joint_t *j = &arm_cfg[i];
-        float    tgt;
-        float    pos;
-        float    step;
-        uint16_t us;
+        int16_t req;
 
         if (j->enabled == 0u)
         {
             continue;
         }
 
-        tgt = g_test_deg[i];
+        req = g_test_deg10[i];
 
-        /* 目标变了：先夹软限，再打印 */
-        if (tgt != s_tgt_deg[i])
+        /* 目标变了（比的是整数 0.1°，不会因为浮点误差反复触发） */
+        if (req != s_req_deg10[i])
         {
-            float t = tgt;
+            float t = (float)req / 10.0f;
+
+            s_req_deg10[i] = req;
 
             if (t < s_soft[i].deg_min)
             {
@@ -378,74 +602,207 @@ static void arm_goto_tick(float dt)
                 t = s_soft[i].deg_max;
             }
 
-            if (t != tgt)
+            if (t != ((float)req / 10.0f))
             {
-                debug_printf("[ARM] ch%u target %d deg -> clamped %d deg (valid %d..%d)\r\n",
-                             (unsigned)i, (int)tgt, (int)t,
+                arm_debug_log_deg(i, "target clamped", t);
+                arm_debug_printf("[ARM] ch%u valid %d..%d deg\r\n",
+                             (unsigned)i,
                              (int)(s_soft[i].deg_min + 0.5f),
                              (int)(s_soft[i].deg_max + 0.5f));
             }
             else
             {
-                debug_printf("[ARM] ch%u target %d deg\r\n", (unsigned)i, (int)tgt);
+                arm_debug_log_deg(i, "target", t);
             }
 
             s_tgt_deg[i] = t;
         }
 
-        pos  = s_pos_deg[i];
-        step = (float)j->speed_dps * dt;
-
-        if (pos < s_tgt_deg[i])
+        if (arm_move_toward(i, dt) != 0u)
         {
-            pos += step;
-            if (pos > s_tgt_deg[i])
+            if (s_moving[i] != 0u)
             {
-                pos = s_tgt_deg[i];
+                s_moving[i] = 0u;
+                arm_debug_log_deg(i, "arrived", s_pos_deg[i]);
             }
+        }
+        else
+        {
             s_moving[i] = 1u;
         }
-        else if (pos > s_tgt_deg[i])
+    }
+}
+
+/* ---------------- 遥控：固定速度积分 ---------------- */
+
+/**
+ * @brief 摇杆控机械臂
+ *
+ * 只看正负，不看大小：
+ *   axis > 0 → 按 speed_dps 往正方向走
+ *   axis < 0 → 往反方向走
+ *   axis = 0 → 什么都不做（积分停住 = 停在原地）
+ *
+ * 遥控器已经做好了死区（lx/ry/rx 50，ly 100），
+ * 所以"轻推"到这里就是 0，不会慢慢爬。
+ */
+static void arm_jog_tick(const remote_cmd_t *cmd, float dt)
+{
+    int16_t  axis[4];
+    uint32_t i;
+
+    axis[0] = cmd->ly;
+    axis[1] = cmd->lx;
+    axis[2] = cmd->ry;
+    axis[3] = cmd->rx;
+
+    for (i = 0; i < 4u; i++)
+    {
+        const arm_joint_t *j = &arm_cfg[i];
+        float    pos = s_pos_deg[i];
+        float    dirf = 0.0f;
+        uint16_t us;
+
+        if (j->enabled == 0u)
         {
-            pos -= step;
-            if (pos < s_tgt_deg[i])
-            {
-                pos = s_tgt_deg[i];
-            }
-            s_moving[i] = 1u;
-        }
-        else if (s_moving[i] != 0u)
-        {
-            s_moving[i] = 0u;
-            debug_printf("[ARM] ch%u arrived %d deg\r\n", (unsigned)i, (int)pos);
+            continue;
         }
 
-        /* 软限位再保一层 */
-        if (pos < s_soft[i].deg_min)
+        if (axis[i] > 0)
         {
-            pos = s_soft[i].deg_min;
+            dirf = (float)arm_axis_dir[i];
         }
-        if (pos > s_soft[i].deg_max)
+        else if (axis[i] < 0)
         {
-            pos = s_soft[i].deg_max;
+            dirf = -(float)arm_axis_dir[i];
         }
+        else
+        {
+            /* 松手：目标速度 0，按加速度平滑刹停 */
+            dirf = 0.0f;
+        }
+
+        /* ---- 加减速限制 ----
+         * 摇杆只给"目标速度的方向"，实际速度每拍最多变化 acc*dt。
+         * 启动/停止/换向都不再是阶跃，电流冲击小很多。
+         */
+        {
+            float acc   = (float)j->acc_dps2;
+            float v_tgt = dirf * (float)j->speed_dps;
+            float vel   = s_vel_dps[i];
+
+            if (v_tgt > (vel + (acc * dt)))
+            {
+                v_tgt = vel + (acc * dt);
+            }
+            if (v_tgt < (vel - (acc * dt)))
+            {
+                v_tgt = vel - (acc * dt);
+            }
+            vel = v_tgt;
+
+            pos += vel * dt;
+
+            /* 顶到限位：位置夹住 + 速度清零" */
+            if (pos < s_soft[i].deg_min)
+            {
+                pos = s_soft[i].deg_min;
+                if (vel < 0.0f)
+                {
+                    vel = 0.0f;
+                }
+            }
+            if (pos > s_soft[i].deg_max)
+            {
+                pos = s_soft[i].deg_max;
+                if (vel > 0.0f)
+                {
+                    vel = 0.0f;
+                }
+            }
+
+            s_vel_dps[i] = vel;
+        }
+
+        /* 顶到限位提示一次 */
+        if (((dirf > 0.0f) && (pos >= s_soft[i].deg_max - ARM_LIMIT_EPS_DEG)) ||
+            ((dirf < 0.0f) && (pos <= s_soft[i].deg_min + ARM_LIMIT_EPS_DEG)))
+        {
+            if (s_at_limit[i] == 0u)
+            {
+                s_at_limit[i] = 1u;
+                arm_debug_printf("[ARM] ch%u at soft limit %d deg\r\n",
+                                 (unsigned)i, (int)pos);
+            }
+        }
+        else
+        {
+            s_at_limit[i] = 0u;
+        }
+
         s_pos_deg[i] = pos;
 
         us = arm_deg_to_us(j, pos);
-        if (us != s_last_us[i])
-        {
-            if (pca9685_set_us(j->ch, us) == 0)
-            {
-                s_last_us[i] = us;
-                s_i2c_fault  = 0u;
-            }
-            else if (s_i2c_fault == 0u)
-            {
-                s_i2c_fault = 1u;
-                debug_printf("[ARM] ch%u I2C write FAIL, holding last value\r\n", (unsigned)i);
-            }
-        }
+        arm_apply_us(i, us);
     }
+}
+
+/* ---------------- 遥控：夹爪 ---------------- */
+
+/**
+ * @brief 夹爪：遥控帧 bit1 直接决定目标位置（1 = 夹紧）
+ *
+ * 遥控器发的是"锁存电平"，不是按键事件：
+ *   按下 RIGHT_X 短按 -> bit1 翻一次，之后一直保持
+ */
+static void arm_grip_tick(const remote_cmd_t *cmd, float dt)
+{
+    uint8_t want;
+
+    if (arm_cfg[4].enabled == 0u)
+    {
+        return;
+    }
+
+    want = ((cmd->flags & RCMD_GRIPPER) != 0u) ? 1u : 0u;
+
+    if (want != s_grip_state)
+    {
+        s_grip_state = want;
+        arm_debug_printf("[ARM] gripper -> %s\r\n", (want != 0u) ? "close" : "open");
+    }
+
+    s_tgt_deg[4] = (want != 0u) ? s_grip_close_deg : s_grip_open_deg;
+
+    (void)arm_move_toward(4u, dt);
+}
+
+/* ---------------- 门控 ---------------- */
+
+static arm_gate_t arm_gate_check(const remote_cmd_t *cmd)
+{
+    if (g_local_estop != 0u)
+    {
+        return ARM_GATE_ESTOP;
+    }
+    if (g_link_lost != 0u)
+    {
+        return ARM_GATE_NO_LINK;
+    }
+    if (cmd == 0)
+    {
+        return ARM_GATE_NO_CMD;
+    }
+    if ((cmd->flags & RCMD_ESTOP) != 0u)
+    {
+        return ARM_GATE_ESTOP;
+    }
+    if ((cmd->flags & RCMD_MODE_ARM) == 0u)
+    {
+        return ARM_GATE_MODE;
+    }
+
+    return ARM_GATE_OK;
 }
 
 /* ---------------- 任务 ---------------- */
@@ -464,7 +821,7 @@ void StartArmTask(void const *argument)
 
     /* ---------------- 1. 探测 ---------------- */
 
-    debug_printf("\r\n[ARM] probe PCA9685 on I2C2 (PB10/PB11, 0x40)\r\n");
+    arm_debug_printf("\r\n[ARM] probe PCA9685 on I2C2 (PB10/PB11, 0x40)\r\n");
 
     for (attempt = 0; attempt < ARM_PROBE_RETRY; attempt++)
     {
@@ -478,22 +835,22 @@ void StartArmTask(void const *argument)
 
     if (ok != 0)
     {
-        debug_printf("[ARM] PCA9685 NOT FOUND\r\n");
-        debug_printf("[ARM] check: VCC=3.3V, GND common, SCL=PB10, SDA=PB11\r\n");
+        arm_debug_printf("[ARM] PCA9685 NOT FOUND\r\n");
+        arm_debug_printf("[ARM] check: VCC=3.3V, GND common, SCL=PB10, SDA=PB11\r\n");
 
         n = pca9685_scan(found, ARM_SCAN_MAX);
         if (n == 0)
         {
-            debug_printf("[ARM] scan: no device answers on I2C2 at all\r\n");
+            arm_debug_printf("[ARM] scan: no device answers on I2C2 at all\r\n");
         }
         else
         {
-            debug_printf("[ARM] scan: %d device(s):", n);
+            arm_debug_printf("[ARM] scan: %d device(s):", n);
             for (i = 0; i < (uint32_t)n; i++)
             {
-                debug_printf(" 0x%02X", found[i]);
+                arm_debug_printf(" 0x%02X", found[i]);
             }
-            debug_printf("\r\n");
+            arm_debug_printf("\r\n");
         }
 
         for (;;)
@@ -508,9 +865,9 @@ void StartArmTask(void const *argument)
     {
         (void)pca9685_read_reg(PCA9685_REG_MODE1, &mode1);
         (void)pca9685_read_reg(PCA9685_REG_PRESCALE, &prescale);
-        debug_printf("[ARM] PCA9685 init FAIL, MODE1=0x%02X, PRESCALE=%u\r\n",
+        arm_debug_printf("[ARM] PCA9685 init FAIL, MODE1=0x%02X, PRESCALE=%u\r\n",
                      mode1, (unsigned)prescale);
-        debug_printf("[ARM] expect MODE1 bit4(SLEEP)=0, bit5(AI)=1, PRESCALE=121\r\n");
+        arm_debug_printf("[ARM] expect MODE1 bit4(SLEEP)=0, bit5(AI)=1, PRESCALE=121\r\n");
 
         for (;;)
         {
@@ -520,7 +877,7 @@ void StartArmTask(void const *argument)
 
     (void)pca9685_read_reg(PCA9685_REG_MODE1, &mode1);
     (void)pca9685_read_reg(PCA9685_REG_PRESCALE, &prescale);
-    debug_printf("[ARM] PCA9685 init OK, MODE1=0x%02X, PRESCALE=%u (50 Hz)\r\n",
+    arm_debug_printf("[ARM] PCA9685 init OK, MODE1=0x%02X, PRESCALE=%u (50 Hz)\r\n",
                  mode1, (unsigned)prescale);
 
     /* ---------------- 3. 标定表 + 写 home + 开输出 ---------------- */
@@ -529,7 +886,7 @@ void StartArmTask(void const *argument)
 
     if (arm_write_home() != 0)
     {
-        debug_printf("[ARM] write home FAIL, OE stays HIGH\r\n");
+        arm_debug_printf("[ARM] write home FAIL, OE stays HIGH\r\n");
         for (;;)
         {
             osDelay(1000);
@@ -541,23 +898,25 @@ void StartArmTask(void const *argument)
 
     pca9685_output_enable();
 
-    debug_printf("[ARM] home written, OE=LOW (outputs %s)\r\n",
+    arm_debug_printf("[ARM] home written, OE=LOW (outputs %s)\r\n",
                  pca9685_output_enabled() ? "enabled" : "disabled");
-    debug_printf("[ARM] arm should already be at home; if not it will snap there now\r\n");
+    arm_debug_printf("[ARM] arm should already be at home; if not it will snap there now\r\n");
 
-    arm_print_cfg();
+    arm_debug_print_cfg();
 
-    if (g_test_mode == ARM_TEST_US)
+    arm_debug_printf("[ARM] axes: ly=boom  lx=forearm  ry=wrist_pitch  rx=wrist_roll\r\n");
+
+    if (g_arm_mode == ARM_MODE_REMOTE)
     {
-        debug_printf("[ARM] mode=1 (us):   edit g_test_us[0..4] in Ozone\r\n");
+        arm_debug_printf("[ARM] mode=0 (remote): switch remote to ARM mode to move\r\n");
     }
-    else if (g_test_mode == ARM_TEST_DEG)
+    else if (g_arm_mode == ARM_MODE_US)
     {
-        debug_printf("[ARM] mode=2 (deg):  edit g_test_deg[0..4] in Ozone, moves at speed_dps\r\n");
+        arm_debug_printf("[ARM] mode=1 (bench us): edit g_test_us[0..4]\r\n");
     }
     else
     {
-        debug_printf("[ARM] mode=0 (freeze): nothing will move\r\n");
+        arm_debug_printf("[ARM] mode=2 (bench deg): edit g_test_deg10[0..4], unit 0.1 deg\r\n");
     }
 
     /* ---------------- 4. 主循环 ---------------- */
@@ -580,19 +939,98 @@ void StartArmTask(void const *argument)
             dt = 0.050f;
         }
 
-        if (g_test_mode == ARM_TEST_US)
+        /* 心跳/面包屑都在 arm_debug.c 里，关掉时是空宏 */
+        ARM_CRUMB(1);
+        arm_debug_tick();
+
+        /* 模式切换：打印一行，并把台架变量同步到"当前位置"，
+         * 避免从遥控/脉宽模式切到角度模式时关节突然跳过去。 */
+        if (g_arm_mode != s_mode_last)
         {
-            arm_raw_tick();
-        }
-        else if (g_test_mode == ARM_TEST_DEG)
-        {
-            arm_goto_tick(dt);
-        }
-        else
-        {
-            /* 冻结：什么都不做，PCA9685 保持最后的脉宽 */
+            uint32_t k;
+
+            if (g_arm_mode == ARM_MODE_DEG)
+            {
+                for (k = 0; k < ARM_JOINT_COUNT; k++)
+                {
+                    s_tgt_deg[k]    = s_pos_deg[k];
+                    s_req_deg10[k]  = (int16_t)(s_pos_deg[k] * 10.0f + 0.5f);
+                    g_test_deg10[k] = s_req_deg10[k];
+                }
+                arm_debug_printf("[ARM] mode -> 2 (deg), target = current position\r\n");
+            }
+            else if (g_arm_mode == ARM_MODE_US)
+            {
+                for (k = 0; k < ARM_JOINT_COUNT; k++)
+                {
+                    g_test_us[k] = s_last_us[k];
+                }
+                arm_debug_printf("[ARM] mode -> 1 (us), values = current pulse\r\n");
+            }
+            else
+            {
+                arm_debug_printf("[ARM] mode -> 0 (remote)\r\n");
+            }
+
+            s_mode_last = g_arm_mode;
+
+            /* 切模式时速度归零，避免带着上一个模式的速度冲出去 */
+            arm_stop_motion();
         }
 
+        ARM_CRUMB(3);
+
+        /* 无论什么模式都取一次最新帧，这样心跳里的轴值永远是实时的 */
+        {
+            remote_cmd_t cmd = {0};
+            BaseType_t   got = xQueuePeek(q_remote_cmd, &cmd, 0);
+
+            ARM_CRUMB(4);
+
+            if (got == pdTRUE)
+            {
+                s_last_flags   = cmd.flags;
+                s_last_axis[0] = cmd.ly;
+                s_last_axis[1] = cmd.lx;
+                s_last_axis[2] = cmd.ry;
+                s_last_axis[3] = cmd.rx;
+            }
+
+            if (g_arm_mode == ARM_MODE_US)
+            {
+                arm_raw_tick();
+            }
+            else if (g_arm_mode == ARM_MODE_DEG)
+            {
+                arm_goto_tick(dt);
+            }
+            else
+            {
+                arm_gate_t gate = arm_gate_check((got == pdTRUE) ? &cmd : 0);
+
+                ARM_CRUMB(5);
+
+                s_gate_cur = (uint8_t)gate;
+                arm_debug_report_gate(gate, s_last_flags);
+
+                ARM_CRUMB(6);
+
+                if (gate == ARM_GATE_OK)
+                {
+                    arm_jog_tick(&cmd, dt);     /* 前 4 路：摇杆 */
+                    arm_grip_tick(&cmd, dt);    /* 第 5 路：bit1 */
+                }
+                else
+                {
+                    arm_stop_motion();
+                }
+
+                ARM_CRUMB(7);
+            }
+        }
+
+        ARM_CRUMB(8);
         osDelay(ARM_LOOP_MS);
+        ARM_CRUMB(9);
     }
 }

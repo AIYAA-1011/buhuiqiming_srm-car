@@ -144,11 +144,13 @@ void MX_FREERTOS_Init(void) {
   MotorTaskHandle = osThreadCreate(osThread(MotorTask), NULL);
 
   /* definition and creation of RemoteTask */
-  osThreadDef(RemoteTask, StartRemoteTask, osPriorityAboveNormal, 0, 128);
+  /* 栈 320 words：这个任务里也会调用 debug_printf */
+  osThreadDef(RemoteTask, StartRemoteTask, osPriorityAboveNormal, 0, 320);
   RemoteTaskHandle = osThreadCreate(osThread(RemoteTask), NULL);
 
   /* definition and creation of ArmTask */
-  osThreadDef(ArmTask, StartArmTask, osPriorityNormal, 0, 192);
+  /* 栈 384 words：这个任务里会调用 debug_printf / vsnprintf，192 words 余量太小 */
+  osThreadDef(ArmTask, StartArmTask, osPriorityNormal, 0, 384);
   ArmTaskHandle = osThreadCreate(osThread(ArmTask), NULL);
 
   /* definition and creation of DisplayTask */
