@@ -80,12 +80,14 @@ typedef struct
 
 static const arm_joint_t arm_cfg[ARM_JOINT_COUNT] =
 {
-    /* ch  min_us max_us home   range dir  dps   acc   en  name           open    close */
-    { 0u,  1460u, 2500u, 1460u, 270u, +1,  60u,  300u, 1u, "boom",          0u,      0u },
-    { 1u,   700u, 2500u,  700u, 270u, +1,  60u,  300u, 1u, "forearm",       0u,      0u },
+    /* ch  min_us max_us home   range dir  dps   acc   en  name           open    close
+     * 注意：ch 是 PCA9685 的通道号（= 板上 LEDx 的 x），不是关节下标。
+     * 现在的接线：LED1=大臂 LED4=小臂 LED2=腕俯仰 LED3=腕旋转 LED0=夹爪 */
+    { 1u,  1460u, 2500u, 1460u, 270u, +1,  60u,  300u, 1u, "boom",          0u,      0u },
+    { 4u,   700u, 2500u,  700u, 270u, +1,  60u,  300u, 1u, "forearm",       0u,      0u },
     { 2u,   500u, 2500u, 1600u, 180u, +1,  40u,  500u, 1u, "wrist_pitch",   0u,      0u },
     { 3u,   500u, 2500u, 1900u, 180u, +1,  40u,  500u, 1u, "wrist_roll",    0u,      0u },
-    { 4u,   500u, 1600u, 1300u, 180u, +1,  90u,  800u, 1u, "gripper",    1300u,   650u },
+    { 0u,   500u, 1600u, 1300u, 180u, +1,  90u,  800u, 1u, "gripper",    1300u,   650u },
 };
 
 /* 摇杆 → 关节 的符号
@@ -373,6 +375,7 @@ void arm_get_joint_cfg(uint32_t idx, arm_joint_cfg_t *out)
         return;
     }
 
+    out->ch        = arm_cfg[idx].ch;
     out->min_us    = arm_cfg[idx].min_us;
     out->max_us    = arm_cfg[idx].max_us;
     out->home_us   = arm_cfg[idx].home_us;
