@@ -6,8 +6,8 @@
 // 但 arm_task.c 不反过来依赖它 —— 关掉时下面是空宏，一行都不会编进去。
 //
 // 开关：
-//   默认跟随 debug.h 里的 DEBUG_ENABLE（0 就全关）；
-//   想单独开机械臂调试、关掉其他模块：编译时加 -DARM_DEBUG=1
+//   现在机械臂已经调通，默认关掉它的输出，把串口让给显示/电池调试；
+//   想看机械臂日志：编译时加 -DARM_DEBUG=1，或把下面的 0 改成 1
 //
 
 #ifndef CAR_CONTROL_ARM_DEBUG_H
@@ -18,7 +18,7 @@
 #include "arm_task.h"
 
 #ifndef ARM_DEBUG
-#define ARM_DEBUG   DEBUG_ENABLE
+#define ARM_DEBUG   0
 #endif
 
 #if (ARM_DEBUG) && (DEBUG_ENABLE)
