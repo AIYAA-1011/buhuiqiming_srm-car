@@ -29,8 +29,8 @@
 
 /* ---------------- 电池参数 ---------------- */
 
-/* 采样电阻：本车 2 mΩ */
-#define DISP_R_SHUNT_MOHM   2u
+/* 采样电阻：本车 3 mΩ */
+#define DISP_R_SHUNT_MOHM   3u
 
 /* 刷新周期（ms） */
 #define DISP_PERIOD_MS      200u
