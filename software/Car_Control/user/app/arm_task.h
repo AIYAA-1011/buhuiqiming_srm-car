@@ -72,6 +72,7 @@ typedef enum
  */
 typedef struct
 {
+    uint8_t     ch;             /* PCA9685 通道号（不是关节下标） */
     uint16_t    min_us;
     uint16_t    max_us;
     uint16_t    home_us;

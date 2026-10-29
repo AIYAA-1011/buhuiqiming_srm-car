@@ -55,7 +55,7 @@ void arm_debug_print_cfg(void)
         arm_get_joint_cfg(i, &jc);
 
         debug_printf("[ARM] ch%u %-11s us %4u..%4u home %4u  deg %3d..%3d (home %3d) dir%s %udps acc%udps2 %s\r\n",
-                     (unsigned)i,
+                     (unsigned)jc.ch,
                      jc.name,
                      (unsigned)jc.min_us,
                      (unsigned)jc.max_us,
