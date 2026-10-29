@@ -18,20 +18,6 @@
 #include "cmsis_os.h"
 #include <stdio.h>
 
-/* ---------------- 串口开关 ----------------
- * 0 = 关闭
- * 1 = 每 1 秒打一行，调试用
- */
-#ifndef DISP_DEBUG
-#define DISP_DEBUG  0
-#endif
-
-#if DISP_DEBUG
-#define disp_printf(...)    debug_printf(__VA_ARGS__)
-#else
-#define disp_printf(...)    ((void)0)
-#endif
-
 /* ---------------- 扫描参数 ---------------- */
 
 #define DISP_SCAN_FIRST     0x08u
@@ -43,8 +29,8 @@
 
 /* ---------------- 电池参数 ---------------- */
 
-/* 采样电阻：本车 2 mΩ */
-#define DISP_R_SHUNT_MOHM   2u
+/* 采样电阻：本车 3 mΩ */
+#define DISP_R_SHUNT_MOHM   3u
 
 /* 刷新周期（ms） */
 #define DISP_PERIOD_MS      200u
@@ -85,9 +71,8 @@ static const soc_point_t s_soc_tbl[] =
 static int32_t s_v_avg_mv;
 
 /**
- * @brief 扫一遍 I2C1，打印所有应答的 7 位地址（只在 DISP_DEBUG=1 时编进来）
+ * @brief 扫一遍 I2C1，打印所有应答的 7 位地址
  */
-#if DISP_DEBUG
 static void i2c1_scan(void)
 {
     uint8_t found[DISP_SCAN_MAX];
@@ -112,18 +97,17 @@ static void i2c1_scan(void)
 
     if (n == 0)
     {
-        disp_printf("[DISP] I2C1 scan: no device found\r\n");
+        debug_printf("[DISP] I2C1 scan: no device found\r\n");
         return;
     }
 
-    disp_printf("[DISP] I2C1 scan: %d device(s):", n);
+    debug_printf("[DISP] I2C1 scan: %d device(s):", n);
     for (i = 0; i < n && i < (int)DISP_SCAN_MAX; i++)
     {
-        disp_printf(" 0x%02X", found[i]);
+        debug_printf(" 0x%02X", found[i]);
     }
-    disp_printf("\r\n");
+    debug_printf("\r\n");
 }
-#endif /* DISP_DEBUG */
 
 static int32_t abs32(int32_t v)
 {
@@ -237,34 +221,30 @@ static int display_update(int32_t *out_mv, int32_t *out_ma,
 void StartDisplayTask(void const *argument)
 {
     int     rc;
-#if DISP_DEBUG
     uint8_t log_cnt = 0u;
-#endif
 
     (void)argument;
 
-    disp_printf("\r\n[DISP] start\r\n");
+    debug_printf("\r\n[DISP] start\r\n");
 
-#if DISP_DEBUG
     /* 总线扫描：确认 OLED(0x3C) 和 INA226(0x40) 都在 */
     i2c1_scan();
-#endif
 
     /* INA226 */
     rc = ina226_init(DISP_R_SHUNT_MOHM);
     if (rc == 0)
     {
-        disp_printf("[DISP] INA226 init OK, R=%u mOhm\r\n", (unsigned)DISP_R_SHUNT_MOHM);
+        debug_printf("[DISP] INA226 init OK, R=%u mOhm\r\n", (unsigned)DISP_R_SHUNT_MOHM);
     }
     else
     {
-        disp_printf("[DISP] INA226 init FAIL, rc=%d (-1 I2C, -2 mfg, -3 die, -4 readback)\r\n", rc);
+        debug_printf("[DISP] INA226 init FAIL, rc=%d (-1 I2C, -2 mfg, -3 die, -4 readback)\r\n", rc);
     }
 
     /* OLED */
     if (oled_init() != 0)
     {
-        disp_printf("[DISP] OLED init FAIL (0x3C / PB8 PB9?)\r\n");
+        debug_printf("[DISP] OLED init FAIL (0x3C / PB8 PB9?)\r\n");
     }
 
     for (;;)
@@ -276,21 +256,19 @@ void StartDisplayTask(void const *argument)
 
         if (display_update(&mv, &ma, &mw, &soc) == 0)
         {
-#if DISP_DEBUG
             if (++log_cnt >= DISP_LOG_EVERY)
             {
                 log_cnt = 0u;
-                disp_printf("[DISP] V %d.%02dV  I %d.%03dA  P %d.%01dW  SOC %u%%\r\n",
+                debug_printf("[DISP] V %d.%02dV  I %d.%03dA  P %d.%01dW  SOC %u%%\r\n",
                              (int)(mv / 1000), (int)(abs32(mv % 1000) / 10),
                              (int)(ma / 1000), (int)abs32(ma % 1000),
                              (int)(mw / 1000), (int)(abs32(mw % 1000) / 100),
                              (unsigned)soc);
             }
-#endif
         }
         else
         {
-            disp_printf("[DISP] INA226 read FAIL\r\n");
+            debug_printf("[DISP] INA226 read FAIL\r\n");
         }
 
         osDelay(DISP_PERIOD_MS);
