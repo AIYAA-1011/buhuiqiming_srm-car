@@ -25,9 +25,11 @@
 #define REG_RF_CH           0x05
 #define REG_RF_SETUP        0x06
 #define REG_STATUS          0x07
+#define REG_CD              0x09u   /* bit0 = RPD，1 表示检测到射频能量 */
 #define REG_RX_ADDR_P0      0x0A
 #define REG_TX_ADDR         0x10
 #define REG_RX_PW_P0        0x11
+#define REG_FIFO_STATUS     0x17
 
 /* ---------------- STATUS 位 ---------------- */
 #define STATUS_RX_DR        0x40
@@ -48,6 +50,11 @@ static const uint8_t s_addr[ADDR_WIDTH] = { 0x0A, 0x01, 0x06, 0x1E, 0x01 };
 
 /* 1 = 初始化成功，可以轮询；0 = 初始化失败，poll 直接返回，不碰 SPI */
 static uint8_t s_ready = 0;
+
+/* 配置快照：拉高 CE 前后各读一次，判断"CE 一拉高芯片是否就不响应了"
+ * [0]=CONFIG [1]=EN_AA [2]=RF_CH [3]=RX_PW_P0 [4]=RF_SETUP [5]=STATUS */
+static uint8_t s_cfg_snap[6];
+static uint8_t s_cfg_live[6];
 
 /* ---------------- 片选 / 使能 ---------------- */
 #define CS_LOW()    HAL_GPIO_WritePin(NRF_CSN_GPIO_Port, NRF_CSN_Pin, GPIO_PIN_RESET)
@@ -147,7 +154,23 @@ static void rx_mode_config(void)
     (void)reg_write(CMD_FLUSH_RX, 0xFF);
     (void)reg_write(CMD_FLUSH_TX, 0xFF);
 
+    /* 拉高 CE 之前先存一份配置快照 */
+    s_cfg_snap[0] = reg_read(REG_CONFIG);
+    s_cfg_snap[1] = reg_read(REG_EN_AA);
+    s_cfg_snap[2] = reg_read(REG_RF_CH);
+    s_cfg_snap[3] = reg_read(REG_RX_PW_P0);
+    s_cfg_snap[4] = reg_read(REG_RF_SETUP);
+    s_cfg_snap[5] = reg_read(REG_STATUS);
+
     CE_HIGH();                                               /* 开始接收 */
+
+    /* 拉高 CE 之后再读一次，两次数值对比 */
+    s_cfg_live[0] = reg_read(REG_CONFIG);
+    s_cfg_live[1] = reg_read(REG_EN_AA);
+    s_cfg_live[2] = reg_read(REG_RF_CH);
+    s_cfg_live[3] = reg_read(REG_RX_PW_P0);
+    s_cfg_live[4] = reg_read(REG_RF_SETUP);
+    s_cfg_live[5] = reg_read(REG_STATUS);
 }
 
 /* ---------------- 对外接口 ---------------- */
@@ -200,7 +223,7 @@ int si24r1_init(void)
 
 int si24r1_poll(uint8_t *newest)
 {
-    uint8_t status;
+    uint8_t fifo;
     uint8_t got = 0;
     uint8_t guard = 0;
     uint8_t tmp[SI24R1_FRAME_LEN];
@@ -210,19 +233,26 @@ int si24r1_poll(uint8_t *newest)
         return 0;
     }
 
+    /* 关键：按"FIFO 里有没有数据"来读，而不是看 RX_DR 标志。
+     *
+     * 之前用 RX_DR 判断，出过这样的死锁：
+     *   FIFO 里卡着 1 帧，但 RX_DR 已经被清掉 -> poll 永远不读 -> 再也收不到。
+     * FIFO_STATUS 的 bit0 才是真相：0 = 有数据，1 = 空。
+     */
     for (;;)
     {
-        status = reg_read(REG_STATUS);
+        fifo = reg_read(REG_FIFO_STATUS);
 
-        /* STATUS 的标志位是"写 1 清除" */
-        (void)reg_write(CMD_WRITE_REG + REG_STATUS, status);
-
-        if ((status & STATUS_RX_DR) == 0)
+        if ((fifo & 0x01u) != 0u)      /* RX_EMPTY = 1，真的空了 */
         {
             break;
         }
 
         (void)reg_read_buf(CMD_RD_RX_PLOAD, tmp, SI24R1_FRAME_LEN);
+
+        /* 读完再清 RX_DR，避免"清了标志却没读数据" */
+        (void)reg_write(CMD_WRITE_REG + REG_STATUS, STATUS_RX_DR);
+
         memcpy(newest, tmp, SI24R1_FRAME_LEN);
         got = 1;
 
@@ -234,4 +264,120 @@ int si24r1_poll(uint8_t *newest)
     }
 
     return (got != 0) ? 1 : 0;
+}
+
+/* ---------------- 调试用 ---------------- */
+
+uint8_t si24r1_status(void)
+{
+    if (s_ready == 0u)
+    {
+        return 0u;
+    }
+
+    return reg_read(REG_STATUS);
+}
+
+uint8_t si24r1_fifo_status(void)
+{
+    if (s_ready == 0u)
+    {
+        return 0xFFu;
+    }
+
+    return reg_read(REG_FIFO_STATUS);
+}
+
+int si24r1_read_config(uint8_t *cfg, uint8_t *en_aa, uint8_t *rf_ch,
+                       uint8_t *pw0, uint8_t *setup)
+{
+    if ((cfg == 0) || (en_aa == 0) || (rf_ch == 0) || (pw0 == 0) || (setup == 0))
+    {
+        return -1;
+    }
+
+    if (s_ready == 0u)
+    {
+        return -1;
+    }
+
+    *cfg   = s_cfg_snap[0];
+    *en_aa = s_cfg_snap[1];
+    *rf_ch = s_cfg_snap[2];
+    *pw0   = s_cfg_snap[3];
+    *setup = s_cfg_snap[4];
+
+    return 0;
+}
+
+int si24r1_live_config(uint8_t *cfg, uint8_t *en_aa, uint8_t *rf_ch,
+                       uint8_t *pw0, uint8_t *setup)
+{
+    if ((cfg == 0) || (en_aa == 0) || (rf_ch == 0) || (pw0 == 0) || (setup == 0))
+    {
+        return -1;
+    }
+
+    if (s_ready == 0u)
+    {
+        return -1;
+    }
+
+    *cfg   = s_cfg_live[0];
+    *en_aa = s_cfg_live[1];
+    *rf_ch = s_cfg_live[2];
+    *pw0   = s_cfg_live[3];
+    *setup = s_cfg_live[4];
+
+    return 0;
+}
+
+int si24r1_ce_effect(uint8_t *before, uint8_t *after)
+{
+    if ((before == 0) || (after == 0))
+    {
+        return -1;
+    }
+
+    if (s_ready == 0u)
+    {
+        return -1;
+    }
+
+    *before = s_cfg_snap[5];
+    *after  = s_cfg_live[5];
+
+    return 0;
+}
+
+uint8_t si24r1_rpd(void)
+{
+    if (s_ready == 0u)
+    {
+        return 0u;
+    }
+
+    return (uint8_t)(reg_read(REG_CD) & 0x01u);
+}
+
+int si24r1_read_now(uint8_t *cfg, uint8_t *en_aa, uint8_t *en_rxaddr,
+                    uint8_t *rf_ch, uint8_t *pw0)
+{
+    if ((cfg == 0) || (en_aa == 0) || (en_rxaddr == 0) || (rf_ch == 0) || (pw0 == 0))
+    {
+        return -1;
+    }
+
+    if (s_ready == 0u)
+    {
+        return -1;
+    }
+
+    *cfg       = reg_read(REG_CONFIG);
+    *en_aa     = reg_read(REG_EN_AA);
+    *en_rxaddr = reg_read(REG_EN_RXADDR);
+    *rf_ch     = reg_read(REG_RF_CH);
+    *pw0       = reg_read(REG_RX_PW_P0);
+
+    return 0;
 }

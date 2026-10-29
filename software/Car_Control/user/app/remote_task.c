@@ -78,6 +78,7 @@ void StartRemoteTask(void const *argument)
     uint8_t      raw[REMOTE_FRAME_LEN];
     remote_cmd_t cmd;
     uint32_t     last_ok;
+    uint32_t     hb_tick = 0u;
 #if DEBUG_ENABLE
     uint32_t     print_cnt = 0;
 #endif
@@ -86,7 +87,27 @@ void StartRemoteTask(void const *argument)
 
     if (si24r1_init() == 0)
     {
+        uint8_t a = 0u, b = 0u, c = 0u, d = 0u, e = 0u;
+        uint8_t st_b = 0u, st_a = 0u;
+
         debug_printf("[REMOTE] SI24R1 init OK\r\n");
+
+        /* 期望：0F 01 28 11 06（CRC16+上电+接收 / 自动应答 / 通道40 / 17字节 / 1Mbps） */
+        if (si24r1_read_config(&a, &b, &c, &d, &e) == 0)
+        {
+            debug_printf("[REMOTE] cfg(before CE)=%02X %02X %02X %02X %02X\r\n",
+                         (unsigned)a, (unsigned)b, (unsigned)c, (unsigned)d, (unsigned)e);
+        }
+        if (si24r1_live_config(&a, &b, &c, &d, &e) == 0)
+        {
+            debug_printf("[REMOTE] cfg(after  CE)=%02X %02X %02X %02X %02X\r\n",
+                         (unsigned)a, (unsigned)b, (unsigned)c, (unsigned)d, (unsigned)e);
+        }
+        if (si24r1_ce_effect(&st_b, &st_a) == 0)
+        {
+            debug_printf("[REMOTE] STATUS before CE=%02X after CE=%02X\r\n",
+                         (unsigned)st_b, (unsigned)st_a);
+        }
     }
     else
     {
@@ -135,5 +156,50 @@ void StartRemoteTask(void const *argument)
         }
 
         osDelay(POLL_PERIOD_MS);
+
+        /* 心跳：每 2 秒报一次收包情况
+         *   rx   有效帧数（不涨 = 收不到）
+         *   err  收到但解析失败
+         *   st   STATUS（bit6=RX_DR 有新包）
+         *   fifo FIFO_STATUS（bit0=1 表示接收 FIFO 空）
+         *   self 自检：0 = 芯片还活着，-1 = 没响应（供电/SPI） */
+        if ((osKernelSysTick() - hb_tick) >= 2000u)
+        {
+            uint8_t lc = 0u, la = 0u, le = 0u, lf = 0u, lp = 0u;
+            int     rc_now;
+
+            hb_tick = osKernelSysTick();
+            rc_now = si24r1_read_now(&lc, &la, &le, &lf, &lp);
+
+            debug_printf("[REMOTE] alive rx=%lu err=%lu st=%02X fifo=%02X self=%d rpd=%u lost=%u\r\n",
+                         (unsigned long)g_remote_rx_ok,
+                         (unsigned long)g_remote_rx_err,
+                         (unsigned)si24r1_status(),
+                         (unsigned)si24r1_fifo_status(),
+                         si24r1_self_test(),
+                         (unsigned)si24r1_rpd(),
+                         (unsigned)g_link_lost);
+
+            /* rc_now = -1 表示"还没初始化成功，没读"（此时后面几个 0 没意义）
+             * aa 期望 01：自动应答必须开，否则遥控器收不到 ACK */
+            debug_printf("[REMOTE] now rc=%d cfg=%02X aa=%02X enrx=%02X ch=%02X pw0=%02X\r\n",
+                         rc_now, (unsigned)lc, (unsigned)la,
+                         (unsigned)le, (unsigned)lf, (unsigned)lp);
+
+            /* cfg 期望 0F；变成 08/00 说明芯片复位了（供电问题），自动重新初始化 */
+            if ((rc_now != 0) || (lc != 0x0Fu))
+            {
+                debug_printf("[REMOTE] radio lost config (reset?), re-init...\r\n");
+
+                if (si24r1_init() == 0)
+                {
+                    debug_printf("[REMOTE] re-init OK\r\n");
+                }
+                else
+                {
+                    debug_printf("[REMOTE] re-init FAIL (power?)\r\n");
+                }
+            }
+        }
     }
 }
