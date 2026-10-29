@@ -131,6 +131,7 @@ void arm_debug_report_gate(arm_gate_t gate, uint8_t flags)
  */
 void arm_debug_log_deg(uint32_t idx, const char *tag, float deg)
 {
+    arm_joint_cfg_t jc;
     /* 正数加 0.5、负数减 0.5，然后取整，等于四舍五入 */
     int d10   = (int)(deg * 10.0f + ((deg >= 0.0f) ? 0.5f : -0.5f));
     int whole = d10 / 10;       /* C 的整除向 0 取整，负数的整数部分正好对 */
@@ -141,7 +142,10 @@ void arm_debug_log_deg(uint32_t idx, const char *tag, float deg)
         frac = -frac;
     }
 
-    debug_printf("[ARM] ch%u %s %d.%d deg\r\n", (unsigned)idx, tag, whole, frac);
+    /* 打印真实通道号，而不是关节下标 */
+    arm_get_joint_cfg(idx, &jc);
+
+    debug_printf("[ARM] ch%u %s %d.%d deg\r\n", (unsigned)jc.ch, tag, whole, frac);
 }
 
 /*

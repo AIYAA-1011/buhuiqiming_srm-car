@@ -255,12 +255,12 @@ static void arm_cal_init(void)
         if (home_deg < s_soft[i].deg_min)
         {
             s_soft[i].deg_min = home_deg;
-            arm_debug_printf("[ARM] ch%u home at lower end, margin relaxed\r\n", (unsigned)i);
+            arm_debug_printf("[ARM] ch%u home at lower end, margin relaxed\r\n", (unsigned)arm_cfg[i].ch);
         }
         if (home_deg > s_soft[i].deg_max)
         {
             s_soft[i].deg_max = home_deg;
-            arm_debug_printf("[ARM] ch%u home at upper end, margin relaxed\r\n", (unsigned)i);
+            arm_debug_printf("[ARM] ch%u home at upper end, margin relaxed\r\n", (unsigned)arm_cfg[i].ch);
         }
 
         s_pos_deg[i]  = home_deg;
@@ -407,7 +407,7 @@ static void arm_apply_us(uint32_t i, uint16_t us)
     else if (s_i2c_fault == 0u)
     {
         s_i2c_fault = 1u;
-        arm_debug_printf("[ARM] ch%u I2C write FAIL, holding last value\r\n", (unsigned)i);
+        arm_debug_printf("[ARM] ch%u I2C write FAIL, holding last value\r\n", (unsigned)arm_cfg[i].ch);
     }
 }
 
@@ -460,12 +460,12 @@ static void arm_raw_tick(void)
             if (want != applied)
             {
                 arm_debug_printf("[ARM] ch%u: %u -> %u us (clamped)\r\n",
-                             (unsigned)i, (unsigned)want, (unsigned)applied);
+                             (unsigned)arm_cfg[i].ch, (unsigned)want, (unsigned)applied);
             }
             else
             {
                 arm_debug_printf("[ARM] ch%u -> %u us\r\n",
-                             (unsigned)i, (unsigned)applied);
+                             (unsigned)arm_cfg[i].ch, (unsigned)applied);
             }
 
             /* 手动给的脉宽也算新的命令位置，切回角度模式时不要跳 */
@@ -476,7 +476,7 @@ static void arm_raw_tick(void)
         else if (s_i2c_fault == 0u)
         {
             s_i2c_fault = 1u;
-            arm_debug_printf("[ARM] ch%u I2C write FAIL, holding last value\r\n", (unsigned)i);
+            arm_debug_printf("[ARM] ch%u I2C write FAIL, holding last value\r\n", (unsigned)arm_cfg[i].ch);
         }
     }
 }
@@ -609,7 +609,7 @@ static void arm_goto_tick(float dt)
             {
                 arm_debug_log_deg(i, "target clamped", t);
                 arm_debug_printf("[ARM] ch%u valid %d..%d deg\r\n",
-                             (unsigned)i,
+                             (unsigned)arm_cfg[i].ch,
                              (int)(s_soft[i].deg_min + 0.5f),
                              (int)(s_soft[i].deg_max + 0.5f));
             }
@@ -735,7 +735,7 @@ static void arm_jog_tick(const remote_cmd_t *cmd, float dt)
             {
                 s_at_limit[i] = 1u;
                 arm_debug_printf("[ARM] ch%u at soft limit %d deg\r\n",
-                                 (unsigned)i, (int)pos);
+                                 (unsigned)arm_cfg[i].ch, (int)pos);
             }
         }
         else

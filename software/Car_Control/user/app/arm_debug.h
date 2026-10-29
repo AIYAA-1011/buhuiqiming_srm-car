@@ -18,7 +18,7 @@
 #include "arm_task.h"
 
 #ifndef ARM_DEBUG
-#define ARM_DEBUG   0
+#define ARM_DEBUG   1
 #endif
 
 #if (ARM_DEBUG) && (DEBUG_ENABLE)
