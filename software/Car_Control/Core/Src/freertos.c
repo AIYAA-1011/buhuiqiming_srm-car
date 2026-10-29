@@ -154,7 +154,8 @@ void MX_FREERTOS_Init(void) {
   ArmTaskHandle = osThreadCreate(osThread(ArmTask), NULL);
 
   /* definition and creation of DisplayTask */
-  osThreadDef(DisplayTask, StartDisplayTask, osPriorityBelowNormal, 0, 192);
+  /* 栈 384 words：任务里会调用 debug_printf / snprintf / OLED 刷屏 */
+  osThreadDef(DisplayTask, StartDisplayTask, osPriorityBelowNormal, 0, 384);
   DisplayTaskHandle = osThreadCreate(osThread(DisplayTask), NULL);
 
   /* definition and creation of SafetyTask */
