@@ -83,10 +83,10 @@ static const arm_joint_t arm_cfg[ARM_JOINT_COUNT] =
     /* ch  min_us max_us home   range dir  dps   acc   en  name           open    close
      * 注意：ch 是 PCA9685 的通道号（= 板上 LEDx 的 x），不是关节下标。
      * 现在的接线：LED1=大臂 LED4=小臂 LED2=腕俯仰 LED3=腕旋转 LED0=夹爪 */
-    { 1u,  1460u, 2500u, 1460u, 270u, +1,  60u,  300u, 1u, "boom",          0u,      0u },
-    { 4u,   700u, 2500u,  700u, 270u, +1,  60u,  300u, 1u, "forearm",       0u,      0u },
-    { 2u,   500u, 2500u, 1600u, 180u, +1,  40u,  500u, 1u, "wrist_pitch",   0u,      0u },
-    { 3u,   500u, 2500u, 1900u, 180u, +1,  40u,  500u, 1u, "wrist_roll",    0u,      0u },
+    { 1u,  1460u, 2500u, 1460u, 270u, +1,  40u,  300u, 1u, "boom",          0u,      0u },
+    { 4u,   700u, 2500u,  700u, 270u, +1,  40u,  300u, 1u, "forearm",       0u,      0u },
+    { 2u,   500u, 2500u, 1500u, 180u, +1,  40u,  500u, 1u, "wrist_pitch",   0u,      0u },
+    { 3u,   500u, 2500u, 1900u, 180u, +1,  60u,  500u, 1u, "wrist_roll",    0u,      0u },
     { 0u,   500u, 1600u, 1300u, 180u, +1,  90u,  800u, 1u, "gripper",    1300u,   650u },
 };
 
@@ -116,9 +116,27 @@ static arm_soft_t s_soft[ARM_JOINT_COUNT];
 static float      s_pos_deg[ARM_JOINT_COUNT];   /* 当前命令位置 */
 static float      s_vel_dps[ARM_JOINT_COUNT];   /* 当前速度（受加速度限制） */
 static float      s_tgt_deg[ARM_JOINT_COUNT];   /* 目标位置（台架角度模式用） */
+static float      s_home_deg[ARM_JOINT_COUNT];  /* 每个关节的 home 角度 */
+
+/* 遥控触发的"顺序回 home"：
+ *   按一次遥控器上的预设键，按 夹爪->腕旋转->腕俯仰->大臂->小臂 依次回 home
+ * 触发键：bit3 对孔 / bit4 取矿 / bit5 放矿，改这里换按键 */
+#define ARM_HOME_TRIGGER_BIT    RCMD_PRESET_HOLE
+
+static uint8_t    s_home_busy;                  /* 1 = 正在顺序归位 */
+static uint8_t    s_home_idx;                   /* 归位到第几个 */
+static uint8_t    s_home_req_last;              /* 上一帧的触发位（做上升沿） */
 static float      s_grip_open_deg;              /* 夹爪张开角度 */
 static float      s_grip_close_deg;             /* 夹爪闭合角度 */
 static uint8_t    s_grip_state;                 /* 0 = 张开，1 = 闭合（只用于打印） */
+
+/* 当前正在动的摇杆轴：0=ly 1=lx 2=ry 3=rx，ARM_AXIS_NONE 表示没动 */
+#define ARM_AXIS_NONE       0xFFu
+
+/* 滞回：当前轴只要还有"最大值"的这个百分比，就不切换 */
+#define ARM_AXIS_KEEP_PCT   85
+
+static uint8_t s_active_axis = ARM_AXIS_NONE;
 static int16_t    s_req_deg10[ARM_JOINT_COUNT]; /* 上次请求的目标（0.1°） */
 static uint8_t    s_moving[ARM_JOINT_COUNT];    /* 正在走（用于打印 arrived） */
 static uint8_t    s_at_limit[ARM_JOINT_COUNT];  /* 已经在限位上（只提示一次） */
@@ -250,6 +268,7 @@ static void arm_cal_init(void)
         }
 
         home_deg = arm_us_to_deg(j, j->home_us);
+        s_home_deg[i] = home_deg;
 
 
         if (home_deg < s_soft[i].deg_min)
@@ -331,6 +350,43 @@ static int arm_write_home(void)
         {
             rc = -1;
         }
+    }
+
+    return rc;
+}
+
+/* 上电归位顺序：夹爪 -> 腕旋转 -> 腕俯仰 -> 大臂 -> 小臂
+ * 先动负载小的，大臂尽量后动，避免五个舵机同时启动造成电流冲击。 */
+static const uint8_t s_home_order[ARM_JOINT_COUNT] = { 4u, 3u, 2u, 0u, 1u };
+
+/* 每个关节归位之间的间隔（ms） */
+#define ARM_HOME_STEP_MS    250u
+
+/**
+ * @brief 逐个关节归位（调用前必须先打开输出）
+ *
+ * 上电时各通道脉宽是 0，舵机没有力矩；
+ * 每写一个通道，那一路舵机才开始动，启动电流是错开的。
+ */
+static int arm_home_sequential(void)
+{
+    uint32_t i;
+    int      rc = 0;
+
+    for (i = 0u; i < ARM_JOINT_COUNT; i++)
+    {
+        uint8_t j = s_home_order[i];
+
+        if (pca9685_set_us(arm_cfg[j].ch, arm_cfg[j].home_us) != 0)
+        {
+            rc = -1;
+        }
+
+        arm_debug_printf("[ARM] home %u/%u: %s -> %u us\r\n",
+                         (unsigned)(i + 1u), (unsigned)ARM_JOINT_COUNT,
+                         arm_cfg[j].name, (unsigned)arm_cfg[j].home_us);
+
+        osDelay(ARM_HOME_STEP_MS);
     }
 
     return rc;
@@ -649,15 +705,137 @@ static void arm_goto_tick(float dt)
  * 遥控器已经做好了死区（lx/ry/rx 50，ly 100），
  * 所以"轻推"到这里就是 0，不会慢慢爬。
  */
+/**
+ * @brief 遥控触发的顺序回 home（非阻塞状态机）
+ *
+ * 按一下预设键，按 s_home_order 的顺序一个一个回 home；
+ * 一次只动一个关节，其余关节停在原地。
+ *
+ * 必须在 arm_jog_tick 之前调用：如果正在归位，调用方要跳过摇杆。
+ */
+static void arm_home_tick(const remote_cmd_t *cmd, float dt)
+{
+    uint8_t pressed;
+    uint8_t j;
+    uint32_t i;
+
+    pressed = ((cmd->flags & ARM_HOME_TRIGGER_BIT) != 0u) ? 1u : 0u;
+
+    /* 上升沿启动（按住不会反复触发） */
+    if ((pressed != 0u) && (s_home_req_last == 0u) && (s_home_busy == 0u))
+    {
+        s_home_busy = 1u;
+        s_home_idx  = 0u;
+        arm_debug_printf("[ARM] HOMING start: gripper -> roll -> pitch -> boom -> forearm\r\n");
+    }
+
+    s_home_req_last = pressed;
+
+    if (s_home_busy == 0u)
+    {
+        return;
+    }
+
+    j = s_home_order[s_home_idx];
+
+    /* 其余关节按住不动 */
+    for (i = 0u; i < ARM_JOINT_COUNT; i++)
+    {
+        if (i != (uint32_t)j)
+        {
+            s_tgt_deg[i] = s_pos_deg[i];
+            s_vel_dps[i] = 0.0f;
+        }
+    }
+
+    /* 当前关节去 home */
+    s_tgt_deg[j] = s_home_deg[j];
+
+    if (arm_move_toward(j, dt) != 0u)
+    {
+        arm_debug_printf("[ARM] HOMING %u/%u done: %s\r\n",
+                         (unsigned)(s_home_idx + 1u), (unsigned)ARM_JOINT_COUNT,
+                         arm_cfg[j].name);
+
+        s_home_idx++;
+
+        if (s_home_idx >= (uint8_t)ARM_JOINT_COUNT)
+        {
+            s_home_busy = 0u;
+            arm_debug_printf("[ARM] HOMING complete\r\n");
+        }
+    }
+}
 static void arm_jog_tick(const remote_cmd_t *cmd, float dt)
 {
     int16_t  axis[4];
+    int32_t  mag[4];
+    uint8_t  best = 0u;
     uint32_t i;
 
     axis[0] = cmd->ly;
     axis[1] = cmd->lx;
     axis[2] = cmd->ry;
     axis[3] = cmd->rx;
+
+    /* ---- 一次只动一个关节 ----
+     * 四个轴取绝对值最大的那一个，其余三个当没推。
+     * 被放弃的关节速度按加速度平滑降到 0，位置保持原地。
+     */
+    for (i = 0u; i < 4u; i++)
+    {
+        mag[i] = (axis[i] < 0) ? -(int32_t)axis[i] : (int32_t)axis[i];
+    }
+
+    for (i = 1u; i < 4u; i++)
+    {
+        if (mag[i] > mag[best])
+        {
+            best = (uint8_t)i;
+        }
+    }
+
+    if (mag[best] == 0)
+    {
+        /* 四个轴都在死区里：全部停 */
+        if (s_active_axis != ARM_AXIS_NONE)
+        {
+            s_active_axis = ARM_AXIS_NONE;
+            arm_debug_printf("[ARM] move: idle\r\n");
+        }
+
+        for (i = 0u; i < 4u; i++)
+        {
+            axis[i] = 0;
+        }
+    }
+    else
+    {
+        /* 滞回：当前关节只要还有最大值的 85%，就不换 */
+        if ((s_active_axis < 4u) &&
+            (mag[s_active_axis] * 100 >= mag[best] * ARM_AXIS_KEEP_PCT))
+        {
+            best = s_active_axis;
+        }
+
+        if (best != s_active_axis)
+        {
+            s_active_axis = best;
+            arm_debug_printf("[ARM] move: %s (ly=%d lx=%d ry=%d rx=%d)\r\n",
+                             arm_cfg[best].name,
+                             (int)axis[0], (int)axis[1],
+                             (int)axis[2], (int)axis[3]);
+        }
+
+        /* 只留最大的那个，其余清零 */
+        for (i = 0u; i < 4u; i++)
+        {
+            if (i != best)
+            {
+                axis[i] = 0;
+            }
+        }
+    }
 
     for (i = 0; i < 4u; i++)
     {
@@ -896,14 +1074,19 @@ void StartArmTask(void const *argument)
         }
     }
 
-    /* 等至少两个 PWM 周期，让每个通道都真的输出 home 脉宽 */
-    osDelay(ARM_ENABLE_GAP_MS);
-
+    /* ---- 先打开输出：各通道脉宽还是 0，舵机没有力矩 ---- */
     pca9685_output_enable();
 
-    arm_debug_printf("[ARM] home written, OE=LOW (outputs %s)\r\n",
-                 pca9685_output_enabled() ? "enabled" : "disabled");
-    arm_debug_printf("[ARM] arm should already be at home; if not it will snap there now\r\n");
+    arm_debug_printf("[ARM] OE=LOW (outputs %s), homing one by one\r\n",
+                     pca9685_output_enabled() ? "enabled" : "disabled");
+
+    /* ---- 逐个归位：夹爪 -> 腕旋转 -> 腕俯仰 -> 大臂 -> 小臂 ---- */
+    if (arm_home_sequential() != 0)
+    {
+        arm_debug_printf("[ARM] sequential home had I2C errors\r\n");
+    }
+
+    arm_debug_printf("[ARM] home done, all joints at home position\r\n");
 
     arm_debug_print_cfg();
 
@@ -1020,11 +1203,18 @@ void StartArmTask(void const *argument)
 
                 if (gate == ARM_GATE_OK)
                 {
-                    arm_jog_tick(&cmd, dt);     /* 前 4 路：摇杆 */
-                    arm_grip_tick(&cmd, dt);    /* 第 5 路：bit1 */
+                    /* 先处理"顺序回 home"：按了预设键就开始，归位中不接受摇杆 */
+                    arm_home_tick(&cmd, dt);
+
+                    if (s_home_busy == 0u)
+                    {
+                        arm_jog_tick(&cmd, dt);     /* 前 4 路：摇杆 */
+                        arm_grip_tick(&cmd, dt);    /* 第 5 路：bit1 */
+                    }
                 }
                 else
                 {
+                    s_home_busy = 0u;               /* 掉线/急停时放弃归位 */
                     arm_stop_motion();
                 }
 
