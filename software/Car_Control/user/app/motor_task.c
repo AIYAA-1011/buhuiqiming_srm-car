@@ -25,12 +25,12 @@
 /* 单轮目标速度上限（mm/s）：
  * 直走 0.30 m/s 时轮子 0.30；斜走 45° 时轮子会到 0.42，
  * 所以留到 450，别让斜走被夹住 */
-#define MOTOR_TARGET_MAX_MM_S   450.0f
+#define MOTOR_TARGET_MAX_MM_S   750.0f
 
 /* 最高车体速度 */
-#define MOTOR_MAX_VX_MPS        0.30f   /* 前进 m/s */
-#define MOTOR_MAX_VY_MPS        0.30f   /* 平移 m/s */
-#define MOTOR_MAX_WZ_RPS        1.00f   /* 旋转 rad/s */
+#define MOTOR_MAX_VX_MPS        0.50f   /* 前进 m/s */
+#define MOTOR_MAX_VY_MPS        0.50f   /* 平移 m/s */
+#define MOTOR_MAX_WZ_RPS        1.50f   /* 旋转 rad/s（约 86°/s，转一圈 4.2 秒） */
 
 /* 摇杆方向系数：+1 / -1，手感反了就改这里 */
 #define STICK_SIGN_VX           (+1)    /* ry：推上 = 前进 */
@@ -39,8 +39,8 @@
 
 /* ---------------- Ozone 可改的变量 ---------------- */
 
-volatile uint8_t g_motor_en;          /* 1 = 使能驱动板 */
-volatile uint8_t g_motor_mode;        /* 0 停 / 1 开环 / 2 速度环 / 3 麦轮 / 4 遥控 */
+volatile uint8_t g_motor_en = 1u;     /* 1 = 使能驱动板（上电自动使能） */
+volatile uint8_t g_motor_mode = MOTOR_MODE_REMOTE;  /* 上电默认遥控 */
 volatile int16_t g_test_duty[MOTOR_COUNT];
 
 volatile uint8_t g_test_wheel;        /* 速度环：测第几路 */
