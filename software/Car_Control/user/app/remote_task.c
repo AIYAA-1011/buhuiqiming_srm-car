@@ -10,9 +10,20 @@
 #include "remote_task.h"
 #include "si24r1.h"
 #include "debug.h"
+#include "main.h"
 #include "cmsis_os.h"
 
 #define POLL_PERIOD_MS      2u      /* 每2ms查一次芯片 */
+
+/* 状态灯（PC13，低电平点亮）：
+ *   没连上      -> 灭
+ *   连上 + 急停 -> 慢闪（1 秒周期，亮 0.5 秒）
+ *   连上正常    -> 常亮
+ */
+#define LED_ON()            HAL_GPIO_WritePin(Status_Led_GPIO_Port, Status_Led_Pin, GPIO_PIN_RESET)
+#define LED_OFF()           HAL_GPIO_WritePin(Status_Led_GPIO_Port, Status_Led_Pin, GPIO_PIN_SET)
+#define LED_BLINK_PERIOD_MS 1000u
+#define LED_BLINK_ON_MS     500u
 #define PRINT_EVERY_N       50u     /* 每 50 帧打印一行 ≈ 0.5s */
 
 /* ---------------- 跨任务共享变量 ---------------- */
@@ -144,15 +155,38 @@ void StartRemoteTask(void const *argument)
             {
                 g_remote_rx_err++;
             }
-        }
-
-        /* 掉线保护：超时就把急停标志置1，只打印一次 */
+        }        /* 掉线保护：超时就把急停标志置1，只打印一次 */
         if ((g_link_lost == 0) &&
             ((osKernelSysTick() - last_ok) > REMOTE_LINK_TIMEOUT_MS))
         {
             g_link_lost    = 1;
             g_remote_estop = 1;
             debug_printf("[REMOTE] LINK LOST\r\n");
+        }
+
+        /* 状态灯（先看连接，再看急停）：
+         *   没连上      -> 灭
+         *   连上 + 急停 -> 慢闪
+         *   连上正常    -> 常亮
+         */
+        if (g_link_lost != 0u)
+        {
+            LED_OFF();
+        }
+        else if ((g_remote_estop != 0u) || (g_local_estop != 0u))
+        {
+            if ((osKernelSysTick() % LED_BLINK_PERIOD_MS) < LED_BLINK_ON_MS)
+            {
+                LED_ON();
+            }
+            else
+            {
+                LED_OFF();
+            }
+        }
+        else
+        {
+            LED_ON();
         }
 
         osDelay(POLL_PERIOD_MS);
