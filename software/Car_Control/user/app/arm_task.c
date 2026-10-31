@@ -93,15 +93,15 @@ static const arm_joint_t arm_cfg[ARM_JOINT_COUNT] =
 /* 摇杆 → 关节 的符号
  *
  * 对应关系（遥控器机械臂模式）：
- *   ly = 大臂   lx = 小臂   ry = 腕俯仰   rx = 腕旋转
- *
+ *   左摇杆上下 ly = 腕旋转    左摇杆左右 lx = 腕俯仰
+ *   右摇杆上下 ry = 小臂      右摇杆左右 rx = 大臂
  * 推杆方向 */
 static const int8_t arm_axis_dir[4] =
 {
-    +1,   /* ly -> 大臂 */
-    -1,   /* lx -> 小臂 */
-    +1,   /* ry -> 腕俯仰 */
-    -1,   /* rx -> 腕旋转 */
+    +1,   /* 0: 大臂    （rx） */
+    -1,   /* 1: 小臂    （ry） */
+    +1,   /* 2: 腕俯仰  （lx） */
+    -1,   /* 3: 腕旋转  （ly） */
 };
 
 /* ---------------- 运行时状态 ---------------- */
@@ -371,6 +371,11 @@ static int arm_write_home(void)
 /* 上电归位顺序：夹爪 -> 腕旋转 -> 腕俯仰 -> 大臂 -> 小臂
  * 先动负载小的，大臂尽量后动，避免五个舵机同时启动造成电流冲击。 */
 static const uint8_t s_home_order[ARM_JOINT_COUNT] = { 4u, 3u, 2u, 0u, 1u };
+
+/* 遥控按"对孔"时的顺序：腕旋转 -> 腕俯仰 -> 大臂 -> 小臂
+ * 不含夹爪：预设过程中夹爪保持当前状态，不参与归位。 */
+#define ARM_HOME_PRESET_STEPS   4u
+static const uint8_t s_home_order_preset[ARM_HOME_PRESET_STEPS] = { 3u, 2u, 0u, 1u };
 
 /* 每个关节归位之间的间隔（ms） */
 #define ARM_HOME_STEP_MS    250u
@@ -811,7 +816,7 @@ static void arm_home_tick(const remote_cmd_t *cmd, float dt)
     {
         s_home_busy = 1u;
         s_home_idx  = 0u;
-        arm_debug_printf("[ARM] HOMING start: gripper -> roll -> pitch -> boom -> forearm\r\n");
+            arm_debug_printf("[ARM] HOMING start: roll -> pitch -> boom -> forearm (gripper untouched)\r\n");
     }
 
     s_home_req_last = pressed;
@@ -821,7 +826,7 @@ static void arm_home_tick(const remote_cmd_t *cmd, float dt)
         return;
     }
 
-    j = s_home_order[s_home_idx];
+    j = s_home_order_preset[s_home_idx];
 
     /* 其余关节按住不动 */
     for (i = 0u; i < ARM_JOINT_COUNT; i++)
@@ -839,12 +844,12 @@ static void arm_home_tick(const remote_cmd_t *cmd, float dt)
     if (arm_move_toward(j, dt) != 0u)
     {
         arm_debug_printf("[ARM] HOMING %u/%u done: %s\r\n",
-                         (unsigned)(s_home_idx + 1u), (unsigned)ARM_JOINT_COUNT,
+                         (unsigned)(s_home_idx + 1u), (unsigned)ARM_HOME_PRESET_STEPS,
                          arm_cfg[j].name);
 
         s_home_idx++;
 
-        if (s_home_idx >= (uint8_t)ARM_JOINT_COUNT)
+        if (s_home_idx >= (uint8_t)ARM_HOME_PRESET_STEPS)
         {
             s_home_busy = 0u;
             arm_debug_printf("[ARM] HOMING complete\r\n");
@@ -858,10 +863,10 @@ static void arm_jog_tick(const remote_cmd_t *cmd, float dt)
     uint8_t  best = 0u;
     uint32_t i;
 
-    axis[0] = cmd->ly;
-    axis[1] = cmd->lx;
-    axis[2] = cmd->ry;
-    axis[3] = cmd->rx;
+    axis[0] = cmd->rx;      /* 大臂     ← 右手左右 */
+    axis[1] = cmd->ry;      /* 小臂     ← 右手上下 */
+    axis[2] = cmd->lx;      /* 腕俯仰   ← 左手左右 */
+    axis[3] = cmd->ly;      /* 腕旋转   ← 左手上下 */
 
     /* ---- 一次只动一个关节 ----
      * 四个轴取绝对值最大的那一个，其余三个当没推。
@@ -1175,7 +1180,7 @@ void StartArmTask(void const *argument)
 
     arm_debug_print_cfg();
 
-    arm_debug_printf("[ARM] axes: ly=boom  lx=forearm  ry=wrist_pitch  rx=wrist_roll\r\n");
+    arm_debug_printf("[ARM] axes: ly=wrist_roll  lx=wrist_pitch  ry=forearm  rx=boom\r\n");
 
     if (g_arm_mode == ARM_MODE_REMOTE)
     {
