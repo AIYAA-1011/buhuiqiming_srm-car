@@ -139,7 +139,8 @@ static void motor_chassis_loop(float dt_s)
 {
     float tgt[MOTOR_COUNT];
 
-    chassis_inverse(g_cmd_vx, g_cmd_vy, g_cmd_wz, tgt);
+    /* 车头换到原来的车尾：前后、左右取负，旋转不变 */
+    chassis_inverse(-g_cmd_vx, -g_cmd_vy, g_cmd_wz, tgt);
     motor_run_targets(tgt, dt_s);
 }
 
@@ -218,6 +219,10 @@ static void motor_remote_loop(float dt_s)
     }
 
     stick_to_cmd(&cmd, &vx, &vy, &wz);
+
+    /* 车头换到原来的车尾：前后、左右取负，旋转不变 */
+    vx = -vx;
+    vy = -vy;
 
     /* 暴露给 Ozone 观察 */
     g_cmd_vx = vx;
