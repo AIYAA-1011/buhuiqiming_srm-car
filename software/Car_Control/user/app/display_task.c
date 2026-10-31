@@ -70,6 +70,7 @@ static const soc_point_t s_soc_tbl[] =
 /* 电压平均值（mV），只用于算电量；显示仍然用瞬时值 */
 static int32_t s_v_avg_mv;
 
+#if DISP_DEBUG
 /**
  * @brief 扫一遍 I2C1，打印所有应答的 7 位地址
  */
@@ -108,6 +109,7 @@ static void i2c1_scan(void)
     }
     debug_printf("\r\n");
 }
+#endif /* DISP_DEBUG */
 
 static int32_t abs32(int32_t v)
 {
@@ -227,8 +229,10 @@ void StartDisplayTask(void const *argument)
 
     debug_printf("\r\n[DISP] start\r\n");
 
-    /* 总线扫描：确认 OLED(0x3C) 和 INA226(0x40) 都在 */
+    /* 总线扫描：确认 OLED(0x3C) 和 INA226(0x40) 都在（只在 DISP_DEBUG=1 时编进来） */
+#if DISP_DEBUG
     i2c1_scan();
+#endif
 
     /* INA226 */
     rc = ina226_init(DISP_R_SHUNT_MOHM);

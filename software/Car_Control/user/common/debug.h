@@ -16,7 +16,7 @@
 
 /* 总开关：比赛固件改成 0；也可以在编译选项里加 -DDEBUG_ENABLE=0 覆盖 */
 #ifndef DEBUG_ENABLE
-#define DEBUG_ENABLE    1
+#define DEBUG_ENABLE    0
 #endif
 
 #if DEBUG_ENABLE

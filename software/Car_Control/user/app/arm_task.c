@@ -85,9 +85,9 @@ static const arm_joint_t arm_cfg[ARM_JOINT_COUNT] =
      * 现在的接线：LED1=大臂 LED4=小臂 LED2=腕俯仰 LED3=腕旋转 LED0=夹爪 */
     { 1u,  1420u, 2500u, 1420u, 270u, +1,  40u,  300u, 1u, "boom",          0u,      0u },
     { 4u,   700u, 2500u,  700u, 270u, +1,  40u,  300u, 1u, "forearm",       0u,      0u },
-    { 2u,   500u, 2500u, 1500u, 180u, +1,  40u,  500u, 1u, "wrist_pitch",   0u,      0u },
+    { 2u,   500u, 2500u, 1520u, 180u, +1,  40u,  500u, 1u, "wrist_pitch",   0u,      0u },
     { 3u,   500u, 2500u, 1900u, 180u, +1,  60u,  500u, 1u, "wrist_roll",    0u,      0u },
-    { 0u,   500u, 1600u, 1300u, 180u, +1,  90u,  800u, 1u, "gripper",    1300u,   650u },
+    { 0u,   500u, 1600u, 1500u, 180u, +1,  90u,  800u, 1u, "gripper",    1500u,   630u },
 };
 
 /* 摇杆 → 关节 的符号
@@ -127,18 +127,45 @@ static uint8_t    s_home_busy;                  /* 1 = 正在顺序归位 */
 static uint8_t    s_home_idx;                   /* 归位到第几个 */
 static uint8_t    s_home_req_last;              /* 上一帧的触发位（做上升沿） */
 
-/* 放矿预设（bit5 放矿键触发）：
- *   小臂 1900 -> 大臂 1420 -> 腕俯仰 2400 -> 腕旋转 1900
- * 夹爪不动；一次只动一个关节；按一次执行一遍。 */
-#define ARM_PRESET_TRIGGER_BIT  RCMD_PRESET_PUT
-#define ARM_PRESET_STEP_COUNT   4u
+/* ---------------- 预设动作 ----------------
+ *
+ * 每个预设：一个触发位 + 一串"关节/脉宽"步骤。
+ * 执行时一次只动一个关节，其余保持；夹爪不参与。
+ *
+ * 关节下标：0=大臂 1=小臂 2=腕俯仰 3=腕旋转
+ */
 
-static const uint8_t  s_preset_order[ARM_PRESET_STEP_COUNT] = { 1u, 0u, 2u, 3u };
-static const uint16_t s_preset_us[ARM_PRESET_STEP_COUNT]    = { 1900u, 1420u, 2400u, 1900u };
+/* 放矿（bit5）：小臂 1850 -> 大臂 1420 -> 腕俯仰 2350 -> 腕旋转 1900 */
+#define ARM_PRESET_PUT_STEPS    4u
+static const uint8_t  s_put_order[ARM_PRESET_PUT_STEPS] = { 1u, 0u, 2u, 3u };
+static const uint16_t s_put_us[ARM_PRESET_PUT_STEPS]    = { 1850u, 1420u, 2350u, 1900u };
 
-static uint8_t    s_preset_busy;                /* 1 = 正在执行预设 */
-static uint8_t    s_preset_idx;                 /* 第几步 */
-static uint8_t    s_preset_req_last;            /* 上一帧的触发位 */
+/* 取矿（bit4）：腕旋转 1900 -> 腕俯仰 500 -> 小臂 1300 -> 大臂 2000 -> 小臂 2300 */
+#define ARM_PRESET_PICK_STEPS   5u
+static const uint8_t  s_pick_order[ARM_PRESET_PICK_STEPS] = { 3u, 2u, 1u, 0u, 1u };
+static const uint16_t s_pick_us[ARM_PRESET_PICK_STEPS]    = { 1900u, 500u, 1300u, 2000u, 2300u };
+
+typedef struct
+{
+    uint8_t        bit;        /* 遥控器标志位 */
+    uint8_t        steps;      /* 步数 */
+    const uint8_t *order;      /* 每步的关节 */
+    const uint16_t *us;        /* 每步的目标脉宽 */
+    const char    *name;       /* 打印用 */
+} arm_preset_t;
+
+static const arm_preset_t s_presets[] =
+{
+    { RCMD_PRESET_PUT,  ARM_PRESET_PUT_STEPS,  s_put_order,  s_put_us,  "PUT"  },
+    { RCMD_PRESET_PICK, ARM_PRESET_PICK_STEPS, s_pick_order, s_pick_us, "PICK" },
+};
+
+#define ARM_PRESET_COUNT    (sizeof(s_presets) / sizeof(s_presets[0]))
+
+static uint8_t    s_preset_busy;                 /* 1 = 正在执行预设 */
+static uint8_t    s_preset_which;                /* 当前执行第几个预设 */
+static uint8_t    s_preset_idx;                  /* 第几步 */
+static uint8_t    s_preset_req_last[ARM_PRESET_COUNT];  /* 每个触发位的上一帧状态 */
 static float      s_grip_open_deg;              /* 夹爪张开角度 */
 static float      s_grip_close_deg;             /* 夹爪闭合角度 */
 static uint8_t    s_grip_state;                 /* 0 = 张开，1 = 闭合（只用于打印） */
@@ -739,29 +766,36 @@ static void arm_goto_tick(float dt)
  */
 static void arm_preset_tick(const remote_cmd_t *cmd, float dt)
 {
-    uint8_t  pressed;
+    uint8_t  k;
     uint8_t  j;
+    uint8_t  pressed;
     float    tgt;
     uint32_t i;
+    const arm_preset_t *p;
 
-    pressed = ((cmd->flags & ARM_PRESET_TRIGGER_BIT) != 0u) ? 1u : 0u;
-
-    /* 上升沿启动（按住不会反复触发） */
-    if ((pressed != 0u) && (s_preset_req_last == 0u) && (s_preset_busy == 0u))
+    /* 1. 检测每个预设的上升沿（只在空闲时能启动） */
+    for (k = 0u; k < (uint8_t)ARM_PRESET_COUNT; k++)
     {
-        s_preset_busy = 1u;
-        s_preset_idx  = 0u;
-        arm_debug_printf("[ARM] PRESET start: forearm -> boom -> pitch -> roll\r\n");
-    }
+        pressed = ((cmd->flags & s_presets[k].bit) != 0u) ? 1u : 0u;
 
-    s_preset_req_last = pressed;
+        if ((pressed != 0u) && (s_preset_req_last[k] == 0u) && (s_preset_busy == 0u))
+        {
+            s_preset_busy  = 1u;
+            s_preset_which = k;
+            s_preset_idx   = 0u;
+            arm_debug_printf("[ARM] PRESET %s start\r\n", s_presets[k].name);
+        }
+
+        s_preset_req_last[k] = pressed;
+    }
 
     if (s_preset_busy == 0u)
     {
         return;
     }
 
-    j = s_preset_order[s_preset_idx];
+    p = &s_presets[s_preset_which];
+    j = p->order[s_preset_idx];
 
     /* 其余关节按住不动 */
     for (i = 0u; i < ARM_JOINT_COUNT; i++)
@@ -774,7 +808,7 @@ static void arm_preset_tick(const remote_cmd_t *cmd, float dt)
     }
 
     /* 目标：脉宽 -> 角度，再夹到软限位 */
-    tgt = arm_us_to_deg(&arm_cfg[j], s_preset_us[s_preset_idx]);
+    tgt = arm_us_to_deg(&arm_cfg[j], p->us[s_preset_idx]);
 
     if (tgt < s_soft[j].deg_min)
     {
@@ -789,16 +823,17 @@ static void arm_preset_tick(const remote_cmd_t *cmd, float dt)
 
     if (arm_move_toward(j, dt) != 0u)
     {
-        arm_debug_printf("[ARM] PRESET %u/%u done: %s -> %u us\r\n",
-                         (unsigned)(s_preset_idx + 1u), (unsigned)ARM_PRESET_STEP_COUNT,
-                         arm_cfg[j].name, (unsigned)s_preset_us[s_preset_idx]);
+        arm_debug_printf("[ARM] %s %u/%u done: %s -> %u us\r\n",
+                         p->name,
+                         (unsigned)(s_preset_idx + 1u), (unsigned)p->steps,
+                         arm_cfg[j].name, (unsigned)p->us[s_preset_idx]);
 
         s_preset_idx++;
 
-        if (s_preset_idx >= (uint8_t)ARM_PRESET_STEP_COUNT)
+        if (s_preset_idx >= p->steps)
         {
             s_preset_busy = 0u;
-            arm_debug_printf("[ARM] PRESET complete\r\n");
+            arm_debug_printf("[ARM] PRESET %s complete\r\n", p->name);
         }
     }
 }
