@@ -86,8 +86,8 @@ static const arm_joint_t arm_cfg[ARM_JOINT_COUNT] =
     { 1u,  1420u, 2500u, 1420u, 270u, +1,  40u,  300u, 1u, "boom",          0u,      0u },
     { 4u,   700u, 2500u,  700u, 270u, +1,  40u,  300u, 1u, "forearm",       0u,      0u },
     { 2u,   500u, 2500u, 1520u, 180u, +1,  40u,  500u, 1u, "wrist_pitch",   0u,      0u },
-    { 3u,   500u, 2500u, 1900u, 180u, +1,  60u,  500u, 1u, "wrist_roll",    0u,      0u },
-    { 0u,   500u, 1600u, 1500u, 180u, +1,  90u,  800u, 1u, "gripper",    1500u,   630u },
+    { 3u,   500u, 2500u, 2500u, 180u, +1,  60u,  500u, 1u, "wrist_roll",    0u,      0u },
+    { 0u,   500u, 1600u, 1500u, 180u, +1,  90u,  800u, 1u, "gripper",    1500u,   650u },
 };
 
 /* 摇杆 → 关节 的符号
@@ -103,6 +103,11 @@ static const int8_t arm_axis_dir[4] =
     +1,   /* 2: 腕俯仰  （lx） */
     -1,   /* 3: 腕旋转  （ly） */
 };
+
+/* 每个摇杆轴的启动死区：绝对值小于它就当没推。
+ * 0 = 用遥控器自带的死区（ly 100，其它 50）
+ * 下标：0=大臂(rx) 1=小臂(ry) 2=腕俯仰(lx) 3=腕旋转(ly) */
+static const int16_t s_axis_deadband[4] = { 0, 0, 0, 350 };
 
 /* ---------------- 运行时状态 ---------------- */
 
@@ -135,15 +140,15 @@ static uint8_t    s_home_req_last;              /* 上一帧的触发位（做�
  * 关节下标：0=大臂 1=小臂 2=腕俯仰 3=腕旋转
  */
 
-/* 放矿（bit5）：小臂 1850 -> 大臂 1420 -> 腕俯仰 2350 -> 腕旋转 1900 */
+/* 放矿（bit5）：小臂 1850 -> 大臂 1420 -> 腕俯仰 2350 -> 腕旋转 2500 */
 #define ARM_PRESET_PUT_STEPS    4u
 static const uint8_t  s_put_order[ARM_PRESET_PUT_STEPS] = { 1u, 0u, 2u, 3u };
-static const uint16_t s_put_us[ARM_PRESET_PUT_STEPS]    = { 1850u, 1420u, 2350u, 1900u };
+static const uint16_t s_put_us[ARM_PRESET_PUT_STEPS]    = { 1850u, 1420u, 2350u, 2500u };
 
-/* 取矿（bit4）：腕旋转 1900 -> 腕俯仰 500 -> 小臂 1300 -> 大臂 2000 -> 小臂 2300 */
+/* 取矿（bit4）：腕旋转 2500 -> 腕俯仰 500 -> 小臂 1300 -> 大臂 2000 -> 小臂 2300 */
 #define ARM_PRESET_PICK_STEPS   5u
 static const uint8_t  s_pick_order[ARM_PRESET_PICK_STEPS] = { 3u, 2u, 1u, 0u, 1u };
-static const uint16_t s_pick_us[ARM_PRESET_PICK_STEPS]    = { 1900u, 500u, 1300u, 2000u, 2300u };
+static const uint16_t s_pick_us[ARM_PRESET_PICK_STEPS]    = { 2500u,  500u, 1300u, 2000u, 2300u };
 
 typedef struct
 {
@@ -516,7 +521,6 @@ static void arm_apply_us(uint32_t i, uint16_t us)
  * @brief 把每个关节的"当前速度"清零
  *
  * 冻结（急停/掉线/切模式）时调用：位置保持不变，但速度归零，
- * 这样恢复控制时是从 0 开始加速，而不是接着上次的速度冲出去。
  */
 static void arm_stop_motion(void)
 {
@@ -907,6 +911,22 @@ static void arm_jog_tick(const remote_cmd_t *cmd, float dt)
      * 四个轴取绝对值最大的那一个，其余三个当没推。
      * 被放弃的关节速度按加速度平滑降到 0，位置保持原地。
      */
+    /* 按各轴死区清零：腕旋转要推到 350 以上才算数 */
+    for (i = 0u; i < 4u; i++)
+    {
+        int16_t v = axis[i];
+
+        if (v < 0)
+        {
+            v = (int16_t)(-v);
+        }
+
+        if (v < s_axis_deadband[i])
+        {
+            axis[i] = 0;
+        }
+    }
+
     for (i = 0u; i < 4u; i++)
     {
         mag[i] = (axis[i] < 0) ? -(int32_t)axis[i] : (int32_t)axis[i];

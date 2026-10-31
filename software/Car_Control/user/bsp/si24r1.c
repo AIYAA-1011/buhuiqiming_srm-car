@@ -35,7 +35,7 @@
 #define STATUS_RX_DR        0x40
 
 /* ---------------- 必须和遥控器一致的参数 ---------------- */
-#define RF_CHANNEL          40          /* 遥控器: CHANNEL 40          */
+#define RF_CHANNEL          82          /* 遥控器: CHANNEL 82          */
 #define RF_SETUP_VAL        0x06        /* 1 Mbps, 0 dBm               */
 #define CONFIG_RX           0x0F        /* EN_CRC|CRCO|PWR_UP|PRIM_RX  */
 #define ADDR_WIDTH          5
