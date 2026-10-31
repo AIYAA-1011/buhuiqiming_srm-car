@@ -126,6 +126,19 @@ static float      s_home_deg[ARM_JOINT_COUNT];  /* 每个关节的 home 角度 *
 static uint8_t    s_home_busy;                  /* 1 = 正在顺序归位 */
 static uint8_t    s_home_idx;                   /* 归位到第几个 */
 static uint8_t    s_home_req_last;              /* 上一帧的触发位（做上升沿） */
+
+/* 放矿预设（bit5 放矿键触发）：
+ *   小臂 1900 -> 大臂 1420 -> 腕俯仰 2400 -> 腕旋转 1900
+ * 夹爪不动；一次只动一个关节；按一次执行一遍。 */
+#define ARM_PRESET_TRIGGER_BIT  RCMD_PRESET_PUT
+#define ARM_PRESET_STEP_COUNT   4u
+
+static const uint8_t  s_preset_order[ARM_PRESET_STEP_COUNT] = { 1u, 0u, 2u, 3u };
+static const uint16_t s_preset_us[ARM_PRESET_STEP_COUNT]    = { 1900u, 1420u, 2400u, 1900u };
+
+static uint8_t    s_preset_busy;                /* 1 = 正在执行预设 */
+static uint8_t    s_preset_idx;                 /* 第几步 */
+static uint8_t    s_preset_req_last;            /* 上一帧的触发位 */
 static float      s_grip_open_deg;              /* 夹爪张开角度 */
 static float      s_grip_close_deg;             /* 夹爪闭合角度 */
 static uint8_t    s_grip_state;                 /* 0 = 张开，1 = 闭合（只用于打印） */
@@ -713,6 +726,78 @@ static void arm_goto_tick(float dt)
  *
  * 必须在 arm_jog_tick 之前调用：如果正在归位，调用方要跳过摇杆。
  */
+/**
+ * @brief 放矿预设（bit5）：小臂 -> 大臂 -> 腕俯仰 -> 腕旋转
+ *
+ * 一次只动一个关节，其余保持；夹爪不动；按一次执行一遍。
+ * 掉线/急停时由调用方把 s_preset_busy 清 0。
+ */
+static void arm_preset_tick(const remote_cmd_t *cmd, float dt)
+{
+    uint8_t  pressed;
+    uint8_t  j;
+    float    tgt;
+    uint32_t i;
+
+    pressed = ((cmd->flags & ARM_PRESET_TRIGGER_BIT) != 0u) ? 1u : 0u;
+
+    /* 上升沿启动（按住不会反复触发） */
+    if ((pressed != 0u) && (s_preset_req_last == 0u) && (s_preset_busy == 0u))
+    {
+        s_preset_busy = 1u;
+        s_preset_idx  = 0u;
+        arm_debug_printf("[ARM] PRESET start: forearm -> boom -> pitch -> roll\r\n");
+    }
+
+    s_preset_req_last = pressed;
+
+    if (s_preset_busy == 0u)
+    {
+        return;
+    }
+
+    j = s_preset_order[s_preset_idx];
+
+    /* 其余关节按住不动 */
+    for (i = 0u; i < ARM_JOINT_COUNT; i++)
+    {
+        if (i != (uint32_t)j)
+        {
+            s_tgt_deg[i] = s_pos_deg[i];
+            s_vel_dps[i] = 0.0f;
+        }
+    }
+
+    /* 目标：脉宽 -> 角度，再夹到软限位 */
+    tgt = arm_us_to_deg(&arm_cfg[j], s_preset_us[s_preset_idx]);
+
+    if (tgt < s_soft[j].deg_min)
+    {
+        tgt = s_soft[j].deg_min;
+    }
+    if (tgt > s_soft[j].deg_max)
+    {
+        tgt = s_soft[j].deg_max;
+    }
+
+    s_tgt_deg[j] = tgt;
+
+    if (arm_move_toward(j, dt) != 0u)
+    {
+        arm_debug_printf("[ARM] PRESET %u/%u done: %s -> %u us\r\n",
+                         (unsigned)(s_preset_idx + 1u), (unsigned)ARM_PRESET_STEP_COUNT,
+                         arm_cfg[j].name, (unsigned)s_preset_us[s_preset_idx]);
+
+        s_preset_idx++;
+
+        if (s_preset_idx >= (uint8_t)ARM_PRESET_STEP_COUNT)
+        {
+            s_preset_busy = 0u;
+            arm_debug_printf("[ARM] PRESET complete\r\n");
+        }
+    }
+}
+
 static void arm_home_tick(const remote_cmd_t *cmd, float dt)
 {
     uint8_t pressed;
@@ -1203,10 +1288,15 @@ void StartArmTask(void const *argument)
 
                 if (gate == ARM_GATE_OK)
                 {
-                    /* 先处理"顺序回 home"：按了预设键就开始，归位中不接受摇杆 */
-                    arm_home_tick(&cmd, dt);
+                    /* 预设优先：放矿按键 -> 顺序回 home -> 摇杆 */
+                    arm_preset_tick(&cmd, dt);
 
-                    if (s_home_busy == 0u)
+                    if (s_preset_busy == 0u)
+                    {
+                        arm_home_tick(&cmd, dt);
+                    }
+
+                    if ((s_home_busy == 0u) && (s_preset_busy == 0u))
                     {
                         arm_jog_tick(&cmd, dt);     /* 前 4 路：摇杆 */
                         arm_grip_tick(&cmd, dt);    /* 第 5 路：bit1 */
@@ -1214,7 +1304,8 @@ void StartArmTask(void const *argument)
                 }
                 else
                 {
-                    s_home_busy = 0u;               /* 掉线/急停时放弃归位 */
+                    s_home_busy   = 0u;            /* 掉线/急停时放弃归位和预设 */
+                    s_preset_busy = 0u;
                     arm_stop_motion();
                 }
 
