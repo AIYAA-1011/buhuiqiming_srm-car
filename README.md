@@ -19,7 +19,7 @@
 
 ## 最终硬件版本
 
-**实际参赛使用A板；B版作为备用，未在比赛中使用。** B版不能作为已经完成实战验证的版本。
+**实际参赛使用A板；B版作为备用，未在比赛中使用。** B版不能作为已经完成实战验证的版本。工程已归档至[备用B版目录](hardware/B-unverified/)，主要调整为元件布置更紧密、电源铺铜面积更大；这些是设计调整，尚无实测验证。
 
 | 部分 | 方案 |
 |---|---|
@@ -32,6 +32,26 @@
 | 无线 | 外接兼容nRF24L01的模块，最终3.3V从调试模块引入 |
 
 最终实物包含外接供电与飞线改动，早期原理图不能完整代表比赛时的接线。复现前需核对实物供电、共地及原供电支路隔离，避免多个稳压输出直接并联。
+
+## 结构方案
+
+![结构CAD示意](assets/structure/cad-overview.jpg)
+
+采用低矮四轮麦克纳姆底盘，电子器件、电池与存矿区在底板上分区布置。机械臂以肩部、肘部舵机直连驱动，末端包含腕部俯仰、旋转和夹爪开合；删除底座回转机构，由车身转向分担朝向调整。主臂使用PLA打印主体，通过折返和末端旋转收纳减小通行占用空间。
+
+最终使用30kg、25kg及3只MG945舵机。比赛中断裂的是夹爪与旋转舵机之间的连接件；队伍复盘认为横向堆积打印方向不合适，后续应按实际受力调整打印方向并验证。详见[结构报告](deliverables/最终交付_结构报告.docx)和[赛后复盘](docs/最终交付.md#结构交付)。
+
+## 仓库目录
+
+| 目录 | 内容 |
+|---|---|
+| [hardware/A-competition](hardware/A-competition/) | 实际参赛A版原理图与PCB资料 |
+| [hardware/B-unverified](hardware/B-unverified/) | 备用B版EDA工程，未经验证、未参赛 |
+| [deliverables](deliverables/) | 最终交付PPT、结构报告及文件版本说明 |
+| [docs](docs/) | 最终交付说明、硬件图文、照片视频索引 |
+| [bom](bom/) | BOM与材料清单原件、历史差异说明 |
+| [assets](assets/) | 原理图/PCB图片、结构图片、照片和视频 |
+| [software](software/) | 车控与遥控器软件工程 |
 
 ## 软件与操作说明
 
@@ -89,13 +109,13 @@
 | 车控软件 | [software/Car_Control](software/Car_Control/) |
 | 遥控器软件 | [software/P02_remote_hal](software/P02_remote_hal/) |
 | 软件使用说明 | [小车说明.md](software/Car_Control/小车说明.md) |
-| 历史原理图与PCB | [原理图与PCB.docx](原理图与PCB.docx) |
-| 中期结构报告 | [Season2027_麦轮小车_中期结构报告.docx](Season2027_麦轮小车_中期结构报告.docx) |
+| A版原理图与PCB（参赛） | [A版_原理图与PCB.docx](hardware/A-competition/A版_原理图与PCB.docx) |
+| 最终交付结构报告 | [最终交付_结构报告.docx](deliverables/最终交付_结构报告.docx) |
 
 - [最终交付与参赛复盘](docs/最终交付.md)
 - [硬件原理图、PCB及接口图片](docs/硬件交付.md)
 - [照片与比赛／练习视频](docs/照片与演示.md)
-- [原始最终交付PPT](deliverables/final-delivery-original.pptx)
+- [原始最终交付PPT](deliverables/最终交付.pptx)
 - [PPT逐页文字索引](docs/PPT文字索引.md)
 - [历史BOM转录及采购差异](bom/README.md)：已包含10月26日PCB BOM及材料明细原件，10月7日版保留作历史记录。
 
