@@ -40,12 +40,17 @@
 
 最终使用30kg、25kg及3只MG945舵机。比赛中断裂的是夹爪与旋转舵机之间的连接件；队伍复盘认为横向堆积打印方向不合适，后续应按实际受力调整打印方向并验证。详见[结构报告](deliverables/最终交付_结构报告.docx)和[赛后复盘](docs/最终交付.md#结构交付)。
 
+### 结构图纸与最终变更
+
+[整车图纸及版本说明](structure/)已归档。整车整体方案沿用中期测评，实物局部调整包括部分螺纹孔/通孔孔径、夹爪齿轮及小臂略微加长。提交图纸未完成整车CAD总装配：队伍说明PWM舵机模型不是理想长方体，装配配合较困难。图纸与最终实物的差异须在复现前核对，详见结构目录说明。
+
 ## 仓库目录
 
 | 目录 | 内容 |
 |---|---|
 | [hardware/A-competition](hardware/A-competition/) | 实际参赛A版原理图与PCB资料 |
 | [hardware/B-unverified](hardware/B-unverified/) | 备用B版EDA工程，未经验证、未参赛 |
+| [structure](structure/) | 整车结构图纸、版本差异与未总装说明 |
 | [deliverables](deliverables/) | 最终交付PPT、结构报告及文件版本说明 |
 | [docs](docs/) | 最终交付说明、硬件图文、照片视频索引 |
 | [bom](bom/) | BOM与材料清单原件、历史差异说明 |
