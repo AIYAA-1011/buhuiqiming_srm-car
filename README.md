@@ -30,7 +30,7 @@
 | 检测与显示 | INA226、采样电阻及OLED |
 | 无线 | 外接兼容nRF24L01的模块，最终3.3V从调试模块引入 |
 
-最终实物包含外接供电与飞线改动，早期原理图不能完整代表比赛时的接线。复现前需核对实物供电、共地及原供电支路隔离，避免多个稳压输出直接并联。
+最终实物包含外接供电与飞线改动，早期不能完整代表比赛时的接线。复现前需核对实物供电、共地及原供电支路隔离，避免多个稳压输出直接并联。
 
 ## 结构方案
 
@@ -48,13 +48,13 @@
 
 | 目录 | 内容 |
 |---|---|
-| [hardware/A-competition](hardware/A-competition/) | 实际参赛A版原理图与PCB资料 |
+| [hardware/A-competition](hardware/A-competition/) | 实际参赛A版与PCB资料 |
 | [hardware/B-unverified](hardware/B-unverified/) | 备用B版EDA工程，未经验证、未参赛 |
 | [structure](structure/) | 整车结构图纸、版本差异与未总装说明 |
 | [deliverables](deliverables/) | 最终交付PPT、结构报告及文件版本说明 |
 | [docs](docs/) | 最终交付说明、硬件图文、照片视频索引 |
 | [bom](bom/) | BOM与材料清单原件、历史差异说明 |
-| [assets](assets/) | 原理图/PCB图片、结构图片、照片和视频 |
+| [assets](assets/) | /PCB图片、结构图片、照片和视频 |
 | [software](software/) | 车控与遥控器软件工程 |
 
 ## 软件与操作说明
@@ -113,11 +113,11 @@
 | 车控软件 | [software/Car_Control](software/Car_Control/) |
 | 遥控器软件 | [software/P02_remote_hal](software/P02_remote_hal/) |
 | 软件使用说明 | [小车说明.md](software/Car_Control/小车说明.md) |
-| A版原理图与PCB（参赛） | [A版_原理图与PCB.docx](hardware/A-competition/A版_原理图与PCB.docx) |
+| A版与PCB文件（参赛） | [A版_与PCB.docx。eprj](hardware/A-competition/A版_与PCB.docx) |
 | 最终交付结构报告 | [最终交付_结构报告.docx](deliverables/最终交付_结构报告.docx) |
 
 - [最终交付与参赛复盘](docs/最终交付.md)
-- [硬件原理图、PCB及接口图片](docs/硬件交付.md)
+- [硬件、PCB及接口图片](docs/硬件交付.md)
 - [照片与比赛／练习视频](docs/照片与演示.md)
 - [原始最终交付PPT](deliverables/最终交付.pptx)
 - [PPT逐页文字索引](docs/PPT文字索引.md)
