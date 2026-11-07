@@ -127,7 +127,7 @@
 
 | 方向 | 贡献者 | 相关GitHub账号 |
 |---|---|---|
-| 硬件 | 雷理杰 | [AIYAA-1011](https://github.com/AIYAA-1011) |
+| 硬件 | 雷理杰（组长） | [AIYAA-1011](https://github.com/AIYAA-1011) |
 | 软件 | 吴欣然 | [Wuxinran2007](https://github.com/Wuxinran2007) |
 | 结构 | 顾翊天、周汐玥 | [gufranklin211-sudo](https://github.com/gufranklin211-sudo) |
 
